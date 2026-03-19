@@ -50,6 +50,7 @@ reader = InstrumentReader()
 class ExperimentCreate(BaseModel):
     name: str
     description: Optional[str] = ""
+    cameras: Optional[List[int]] = []  # 新增：关联相机列表
     instruments: List[Dict[str, Any]]  # [{camera_id: 0, type: "ph_meter", name: "pH计1"}, ...]
 
 class ReadingResult(BaseModel):
@@ -194,6 +195,7 @@ async def create_experiment(exp: ExperimentCreate):
         "id": exp_id,
         "name": exp.name,
         "description": exp.description,
+        "cameras": exp.cameras or [],  # 新增：关联相机列表
         "instruments": exp.instruments,
         "created_at": datetime.now().isoformat(),
         "readings": []
