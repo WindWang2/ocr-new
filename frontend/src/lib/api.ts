@@ -3,13 +3,18 @@ import { Experiment, ExperimentSummary, Reading, CameraFieldConfig, ManualParams
 const BASE = process.env.NEXT_PUBLIC_API_URL || '/api'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  })
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      headers: { 'Content-Type': 'application/json' },
+      ...options,
+    })
+  } catch {
+    throw new Error('无法连接到后端服务，请确认后端已启动（端口 8001）')
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error((err as { detail?: string }).detail || `HTTP ${res.status}`)
+    throw new Error((err as { detail?: string }).detail || `服务器错误 (${res.status})`)
   }
   return res.json()
 }
