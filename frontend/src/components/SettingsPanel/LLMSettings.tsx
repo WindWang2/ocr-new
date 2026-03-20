@@ -107,6 +107,34 @@ export default function LLMSettings({ onStatusChange }: LLMSettingsProps) {
         />
       </div>
 
+      {/* 高级参数 */}
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="text-xs text-gray-500 block mb-1">Temperature</label>
+          <input
+            type="number"
+            min={0}
+            max={2}
+            step={0.1}
+            value={editing.temperature}
+            onChange={e => setEditing({ ...editing, temperature: parseFloat(e.target.value) || 0 })}
+            className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-blue-400"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-gray-500 block mb-1">Max Tokens</label>
+          <input
+            type="number"
+            min={1}
+            max={32768}
+            step={1}
+            value={editing.max_tokens}
+            onChange={e => setEditing({ ...editing, max_tokens: parseInt(e.target.value) || 1 })}
+            className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-blue-400"
+          />
+        </div>
+      </div>
+
       {providerType === 'ollama' ? (
         /* Ollama 模式: 模型列表 */
         <div>

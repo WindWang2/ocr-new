@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { Experiment, ExperimentSummary, ExperimentType, Reading, CameraFieldConfig, ManualParams, LLMStatus } from '@/types'
-import { listExperiments, getExperiment, createExperiment, captureReading, getMockConfig, setMockConfig, checkLLMStatus } from '@/lib/api'
+import { listExperiments, getExperiment, createExperiment, deleteExperiment, captureReading, getMockConfig, setMockConfig, checkLLMStatus } from '@/lib/api'
 import ExperimentList from '@/components/ExperimentList'
 import Step1TypeSelector from '@/components/CreateExperiment/Step1TypeSelector'
 import Step2Config from '@/components/CreateExperiment/Step2Config'
@@ -78,6 +78,20 @@ export default function Home() {
       await handleSelectExperiment(id)
     } finally {
       setCreating(false)
+    }
+  }
+
+  const handleDeleteExperiment = async (id: number) => {
+    try {
+      await deleteExperiment(id)
+      if (selectedExperiment?.id === id) {
+        setSelectedExperiment(null)
+        setView('list_empty')
+      }
+      await loadList()
+    } catch (e) {
+      console.error('删除实验失败', e)
+    } finally {
     }
   }
 
@@ -223,6 +237,7 @@ export default function Home() {
               selectedId={selectedExperiment?.id ?? null}
               onSelect={handleSelectExperiment}
               onNew={() => { setView('create_step1'); setSelectedExperiment(null) }}
+              onDelete={handleDeleteExperiment}
             />
           </div>
           <div className="md:col-span-2">

@@ -37,6 +37,10 @@ export async function createExperiment(payload: {
   return data.experiment_id
 }
 
+export async function deleteExperiment(id: number): Promise<void> {
+  await request(`/experiments/${id}`, { method: 'DELETE' })
+}
+
 export async function captureReading(
   experimentId: number,
   fieldKey: string,
