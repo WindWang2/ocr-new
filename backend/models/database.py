@@ -142,7 +142,6 @@ def create_experiment(
     description: str = None,
 ) -> int:
     """创建实验记录，支持新的 type/manual_params/camera_configs 字段"""
-    import json
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(

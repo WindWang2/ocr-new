@@ -30,7 +30,7 @@ from backend.models.database import (
     init_db, add_camera, get_cameras, get_camera_by_id,
     create_experiment,
     get_experiment, list_experiments, delete_experiment,
-    create_reading, get_readings_by_experiment,
+    create_reading, get_readings_by_experiment, get_connection,
 )
 from backend.services.camera_control import (
     CameraClient, get_all_enabled_cameras
@@ -130,7 +130,6 @@ def create_camera(camera: CameraCreate):
 def remove_camera(camera_id: int):
     """删除相机（软删除设置为 disabled）"""
     # 这里使用软删除，实际禁用
-    from backend.models.database import get_connection
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("UPDATE cameras SET enabled = 0 WHERE camera_id = ?", (camera_id,))
