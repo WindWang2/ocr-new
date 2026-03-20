@@ -57,6 +57,33 @@ def init_db():
         )
     """)
     
+    # 迁移：为旧 experiments 表添加新列（幂等）
+    for col_def in [
+        "ALTER TABLE experiments ADD COLUMN type TEXT",
+        "ALTER TABLE experiments ADD COLUMN manual_params TEXT",
+        "ALTER TABLE experiments ADD COLUMN camera_configs TEXT",
+    ]:
+        try:
+            cursor.execute(col_def)
+        except Exception:
+            pass  # 列已存在则忽略
+
+    # 新增：每次读数独立记录
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS experiment_readings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            experiment_id INTEGER NOT NULL,
+            field_key TEXT NOT NULL,
+            camera_id INTEGER NOT NULL,
+            value REAL NOT NULL,
+            run_index INTEGER NOT NULL DEFAULT 1,
+            confidence REAL,
+            image_path TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (experiment_id) REFERENCES experiments(id)
+        )
+    """)
+
     conn.commit()
     conn.close()
     print(f"[DB] 初始化完成: {DB_PATH}")
@@ -165,49 +192,31 @@ def update_experiment_readings(exp_id: int, readings: dict, raw_readings: dict =
 
 
 def get_experiment(exp_id: int) -> Optional[dict]:
-    """获取实验详情"""
     import json
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM experiments WHERE id = ?", (exp_id,))
     row = cursor.fetchone()
     conn.close()
-    
     if not row:
         return None
-    
     result = dict(row)
-    # 解析JSON字段
-    if result.get("readings_json"):
-        result["readings"] = json.loads(result["readings_json"])
-    if result.get("raw_readings_json"):
-        result["raw_readings"] = json.loads(result["raw_readings_json"])
-    # 解析相机IDs
-    if result.get("camera_ids"):
-        result["camera_id_list"] = [int(x) for x in result["camera_ids"].split(",")]
-    
+    result["manual_params"] = json.loads(result.get("manual_params") or "{}")
+    result["camera_configs"] = json.loads(result.get("camera_configs") or "[]")
+    result["readings"] = get_readings_by_experiment(exp_id)
     return result
 
 
 def list_experiments(limit: int = 50, offset: int = 0) -> List[dict]:
-    """获取实验列表"""
-    import json
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT * FROM experiments ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        (limit, offset)
+        "SELECT id, name, type, created_at FROM experiments ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (limit, offset),
     )
     rows = cursor.fetchall()
     conn.close()
-    
-    results = []
-    for row in rows:
-        r = dict(row)
-        if r.get("readings_json"):
-            r["readings"] = json.loads(r["readings_json"])
-        results.append(r)
-    return results
+    return [dict(row) for row in rows]
 
 
 def delete_experiment(exp_id: int) -> bool:
@@ -219,6 +228,55 @@ def delete_experiment(exp_id: int) -> bool:
     conn.commit()
     conn.close()
     return deleted
+
+
+def create_reading(
+    experiment_id: int,
+    field_key: str,
+    camera_id: int,
+    value: float,
+    run_index: int,
+    confidence: float = None,
+    image_path: str = None,
+) -> dict:
+    """保存单次读数，返回完整读数记录"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ts = datetime.now().isoformat()
+    cursor.execute(
+        """INSERT INTO experiment_readings
+           (experiment_id, field_key, camera_id, value, run_index, confidence, image_path, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (experiment_id, field_key, camera_id, value, run_index, confidence, image_path, ts),
+    )
+    conn.commit()
+    reading_id = cursor.lastrowid
+    conn.close()
+    return {
+        "id": reading_id,
+        "field_key": field_key,
+        "camera_id": camera_id,
+        "value": value,
+        "run_index": run_index,
+        "confidence": confidence,
+        "image_path": image_path,
+        "timestamp": ts,
+    }
+
+
+def get_readings_by_experiment(experiment_id: int) -> List[dict]:
+    """获取实验的所有读数，按 field_key + run_index 排序"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT * FROM experiment_readings
+           WHERE experiment_id = ?
+           ORDER BY field_key, run_index""",
+        (experiment_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
 
 
 if __name__ == "__main__":

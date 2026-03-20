@@ -7,6 +7,7 @@ pyyaml>=6.0
 
 # === 可选：报告生成 ===
 # pip install python-docx openpyxl
+openpyxl>=3.1.0
 fastapi>=0.109.0
 uvicorn>=0.27.0
 python-multipart>=0.0.6
