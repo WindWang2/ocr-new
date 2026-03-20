@@ -311,16 +311,6 @@ class MultimodalModelReader:
             self.base_url = base_url or Config.OLLAMA_BASE_URL
             self.model_name = model_name or Config.OLLAMA_QWEN_MODEL
 
-            # 导入 Ollama 客户端
-            try:
-                import ollama
-                self.ollama = ollama
-            except ImportError:
-                raise ImportError(
-                    "请安装 ollama Python 客户端:\n"
-                    "  pip install ollama"
-                )
-
             from backend.services.llm_provider import OllamaProvider, LLMConfig
             self._provider = OllamaProvider(LLMConfig(
                 provider="ollama",

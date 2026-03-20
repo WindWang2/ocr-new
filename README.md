@@ -52,7 +52,7 @@ cd frontend && npm install
 ### 2. 启动 Ollama 并拉取模型
 
 ```bash
-ollama pull qwen2.5:latest
+ollama pull qwen3.5:latest
 ```
 
 ### 3. 启动服务

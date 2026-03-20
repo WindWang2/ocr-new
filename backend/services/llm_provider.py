@@ -3,7 +3,7 @@ LLM Provider 抽象层 - 支持 Ollama 和 OpenAI 兼容 API
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,9 @@ class OllamaProvider:
             options={"temperature": temperature, "num_predict": max_tokens},
         )
         return response.message.content
+
+    def close(self):
+        pass
 
 
 class OpenAICompatibleProvider:
@@ -118,6 +121,9 @@ class OpenAICompatibleProvider:
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
 
+    def close(self):
+        self._http.close()
+
 
 def create_provider(config: LLMConfig) -> "LLMProvider":
     """工厂函数：根据配置创建 provider 实例"""
@@ -160,6 +166,8 @@ def get_global_provider() -> "LLMProvider":
 
 
 def set_global_provider(provider: "LLMProvider") -> None:
-    """设置全局 LLM provider 单例"""
+    """设置全局 LLM provider 单例，关闭旧连接"""
     global _global_provider
+    if _global_provider is not None and hasattr(_global_provider, 'close'):
+        _global_provider.close()
     _global_provider = provider
