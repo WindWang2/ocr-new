@@ -1,6 +1,6 @@
 import { Experiment, ExperimentSummary, Reading, CameraFieldConfig, ManualParams, ExperimentType, LLMConfig, OllamaModel, LLMStatus } from '@/types'
 
-const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {

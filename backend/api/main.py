@@ -6,7 +6,7 @@ OCR 实验 API 服务
 2. 实验执行（触发单字段相机拍照并保存读数）
 3. 实验记录查询
 
-启动: uvicorn main:app --reload --port 8000
+启动: uvicorn main:app --reload --port 8001
 """
 
 from fastapi import FastAPI, HTTPException, Query
@@ -553,4 +553,4 @@ def get_config():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)
