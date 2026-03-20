@@ -46,3 +46,22 @@ export interface ExperimentViewProps {
   onCapture: (fieldKey: string, cameraId: number) => Promise<Reading>
   capturing: string | null
 }
+
+export type LLMProviderType = 'ollama' | 'openai_compatible'
+
+export interface LLMConfig {
+  provider: LLMProviderType
+  model_name: string
+  base_url: string
+  api_key: string | null
+  temperature: number
+  max_tokens: number
+}
+
+export interface OllamaModel {
+  name: string
+  size: number
+  modified_at: string
+}
+
+export type LLMStatus = 'connected' | 'error' | 'loading' | 'unknown'

@@ -1,4 +1,4 @@
-import { Experiment, ExperimentSummary, Reading, CameraFieldConfig, ManualParams, ExperimentType } from '@/types'
+import { Experiment, ExperimentSummary, Reading, CameraFieldConfig, ManualParams, ExperimentType, LLMConfig, OllamaModel, LLMStatus } from '@/types'
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001'
 
@@ -67,4 +67,26 @@ export async function setMockConfig(enabled: boolean): Promise<void> {
     method: 'POST',
     body: JSON.stringify({ enabled }),
   })
+}
+
+export async function getLLMConfig(): Promise<LLMConfig> {
+  const data = await request<{ success: boolean; config: LLMConfig }>('/config/llm')
+  return data.config
+}
+
+export async function setLLMConfig(config: LLMConfig): Promise<void> {
+  await request('/config/llm', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  })
+}
+
+export async function listOllamaModels(baseUrl?: string): Promise<OllamaModel[]> {
+  const query = baseUrl ? `?base_url=${encodeURIComponent(baseUrl)}` : ''
+  const data = await request<{ success: boolean; models: OllamaModel[] }>(`/config/llm/models${query}`)
+  return data.models
+}
+
+export async function checkLLMStatus(): Promise<{ success: boolean; status: LLMStatus; model?: string; provider?: string; detail?: string }> {
+  return request('/config/llm/status')
 }

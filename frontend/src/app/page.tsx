@@ -1,12 +1,13 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { Experiment, ExperimentSummary, ExperimentType, Reading, CameraFieldConfig, ManualParams } from '@/types'
-import { listExperiments, getExperiment, createExperiment, captureReading, getMockConfig, setMockConfig } from '@/lib/api'
+import { Experiment, ExperimentSummary, ExperimentType, Reading, CameraFieldConfig, ManualParams, LLMStatus } from '@/types'
+import { listExperiments, getExperiment, createExperiment, captureReading, getMockConfig, setMockConfig, checkLLMStatus } from '@/lib/api'
 import ExperimentList from '@/components/ExperimentList'
 import Step1TypeSelector from '@/components/CreateExperiment/Step1TypeSelector'
 import Step2Config from '@/components/CreateExperiment/Step2Config'
 import ExperimentDetail from '@/components/ExperimentDetail'
+import LLMSettings from '@/components/SettingsPanel/LLMSettings'
 import { FlaskConical, Settings, X } from 'lucide-react'
 
 type View = 'list_empty' | 'create_step1' | 'create_step2' | 'detail'
@@ -27,9 +28,13 @@ export default function Home() {
   // Mock 相机设置
   const [mockEnabled, setMockEnabled] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [llmStatus, setLlmStatus] = useState<LLMStatus>('unknown')
 
   useEffect(() => {
     getMockConfig().then(setMockEnabled).catch(() => {})
+    checkLLMStatus()
+      .then(r => setLlmStatus(r.status))
+      .catch(() => setLlmStatus('error'))
   }, [])
 
   const loadList = useCallback(async () => {
@@ -151,6 +156,11 @@ export default function Home() {
               onClick={() => setShowSettings(v => !v)}
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm text-gray-600 hover:bg-white hover:shadow-sm transition"
             >
+              <span className={`w-2 h-2 rounded-full shrink-0 ${
+                llmStatus === 'connected' ? 'bg-green-500' :
+                llmStatus === 'error' ? 'bg-red-500' :
+                'bg-yellow-400'
+              }`} />
               <Settings size={17} />
               系统设置
               {mockEnabled && (
@@ -159,7 +169,7 @@ export default function Home() {
             </button>
 
             {showSettings && (
-              <div className="absolute right-0 top-10 w-72 bg-white rounded-xl shadow-lg border border-gray-200 p-4 z-50">
+              <div className="absolute right-0 top-10 w-72 bg-white rounded-xl shadow-lg border border-gray-200 p-4 z-50 max-h-[480px] overflow-y-auto">
                 <div className="flex justify-between items-center mb-3">
                   <span className="font-semibold text-gray-800 text-sm">系统设置</span>
                   <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-600">
@@ -195,6 +205,12 @@ export default function Home() {
                     已开启：拍照将读取 camera_images/F&#123;id&#125;/ 目录最新图片
                   </p>
                 )}
+
+                {/* LLM 模型配置 */}
+                <div className="border-t border-gray-100 mt-3 pt-3">
+                  <div className="text-sm font-medium text-gray-700 mb-2">LLM 模型</div>
+                  <LLMSettings onStatusChange={setLlmStatus} />
+                </div>
               </div>
             )}
           </div>
