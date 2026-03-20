@@ -1,6 +1,6 @@
 import { Experiment, ExperimentSummary, Reading, CameraFieldConfig, ManualParams, ExperimentType, LLMConfig, OllamaModel, LLMStatus } from '@/types'
 
-const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001'
+const BASE = process.env.NEXT_PUBLIC_API_URL || '/api'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -54,7 +54,7 @@ export async function captureReading(
 }
 
 export function exportUrl(experimentId: number): string {
-  return `${BASE}/experiments/${experimentId}/export`
+  return `/api/experiments/${experimentId}/export`
 }
 
 export async function getMockConfig(): Promise<boolean> {
