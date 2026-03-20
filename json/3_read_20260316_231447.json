@@ -1,0 +1,15 @@
+{
+  "timestamp": "2026-03-16T23:14:47.179401",
+  "image_path": "demo/3.jpg",
+  "call_type": "read",
+  "model": "qwen3.5:latest",
+  "prompt": "这是电子天平/分析天平，读取显示数值：weight(g)\n\n【重要】你必须严格按照以下JSON格式输出，不要输出任何其他内容：\n\n{\"instrument_type\": \"electronic_balance\", \"readings\": {\"weight\": 0.0}, \"confidence\": 0.95}\n\n输出要求：\n1. 只输出一行JSON，不要有其他任何文字\n2. 不要输出分析过程\n3. 数值是纯数字，不含单位\n4. 无法读取的值设为null\n5. 注意观察小数点的位置，不要遗漏\n\n/no_think",
+  "raw_response": "```json\r\n{\"instrument_type\": \"electronic_balance\", \"readings\": {\"weight\": 0.64}, \"confidence\": 0.95}\n```",
+  "parsed_response": {
+    "instrument_type": "electronic_balance",
+    "readings": {
+      "weight": 0.64
+    },
+    "confidence": 0.95
+  }
+}

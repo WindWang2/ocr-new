@@ -1,0 +1,12 @@
+{
+  "success": true,
+  "instrument_type": "unknown",
+  "instrument_name": "未知仪器",
+  "type_confidence": 0.9,
+  "readings": {
+    "value": 0.0
+  },
+  "confidence": 0.95,
+  "method": "multimodal",
+  "image_file": "demo\\5.jpg"
+}

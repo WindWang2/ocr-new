@@ -13,7 +13,7 @@ DB_PATH = Path(__file__).parent.parent / "experiments.db"
 
 def get_connection():
     """获取数据库连接"""
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
 
