@@ -7,3 +7,8 @@ __pycache__/
 dist/
 build/
 *.log
+node_modules/
+.next/
+data/
+.env.local
+logs/
