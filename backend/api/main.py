@@ -537,7 +537,7 @@ def health_check():
 
 
 @app.get("/config")
-def get_config():
+def get_system_config():
     """获取系统配置"""
     return {
         "success": True,
