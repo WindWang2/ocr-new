@@ -2,10 +2,14 @@
 数据库模型 - 实验表和相机关联
 """
 
+import json
+import logging
 import sqlite3
 from datetime import datetime
 from typing import List, Optional
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 DB_PATH = Path(__file__).parent.parent / "experiments.db"
@@ -174,7 +178,6 @@ def create_experiment(name: str, description: str = None,
 
 def update_experiment_readings(exp_id: int, readings: dict, raw_readings: dict = None):
     """更新实验读数"""
-    import json
     conn = get_connection()
     cursor = conn.cursor()
     
@@ -192,7 +195,7 @@ def update_experiment_readings(exp_id: int, readings: dict, raw_readings: dict =
 
 
 def get_experiment(exp_id: int) -> Optional[dict]:
-    import json
+    """获取实验详情（含解析后的 manual_params/camera_configs 和所有 readings）"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM experiments WHERE id = ?", (exp_id,))
@@ -201,13 +204,22 @@ def get_experiment(exp_id: int) -> Optional[dict]:
     if not row:
         return None
     result = dict(row)
-    result["manual_params"] = json.loads(result.get("manual_params") or "{}")
-    result["camera_configs"] = json.loads(result.get("camera_configs") or "[]")
+    try:
+        result["manual_params"] = json.loads(result.get("manual_params") or "{}")
+    except json.JSONDecodeError:
+        logger.warning(f"实验 {exp_id} manual_params JSON 解析失败，使用空值")
+        result["manual_params"] = {}
+    try:
+        result["camera_configs"] = json.loads(result.get("camera_configs") or "[]")
+    except json.JSONDecodeError:
+        logger.warning(f"实验 {exp_id} camera_configs JSON 解析失败，使用空值")
+        result["camera_configs"] = []
     result["readings"] = get_readings_by_experiment(exp_id)
     return result
 
 
 def list_experiments(limit: int = 50, offset: int = 0) -> List[dict]:
+    """获取实验列表（摘要：id/name/type/created_at，不含 readings）"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -269,7 +281,8 @@ def get_readings_by_experiment(experiment_id: int) -> List[dict]:
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        """SELECT * FROM experiment_readings
+        """SELECT id, experiment_id, field_key, camera_id, value, run_index, confidence, image_path, timestamp
+           FROM experiment_readings
            WHERE experiment_id = ?
            ORDER BY field_key, run_index""",
         (experiment_id,),
