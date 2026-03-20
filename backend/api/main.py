@@ -375,6 +375,157 @@ def set_mock_config(body: MockConfigUpdate):
 
 # ==================== 工具 API ====================
 
+# ==================== LLM 模型配置 API ====================
+
+def _mask_api_key(key: Optional[str]) -> Optional[str]:
+    """脱敏 API Key，仅显示前4位和后4位"""
+    if not key or len(key) <= 8:
+        return key
+    return key[:4] + "****" + key[-4:]
+
+
+@app.get("/config/llm")
+def get_llm_config():
+    """获取当前 LLM 模型配置（API Key 脱敏）"""
+    saved = get_config("llm_config", default=None)
+    if saved:
+        saved = {**saved, "api_key": _mask_api_key(saved.get("api_key"))}
+        return {"success": True, "config": saved}
+    return {
+        "success": True,
+        "config": {
+            "provider": "ollama",
+            "model_name": Config.OLLAMA_QWEN_MODEL,
+            "base_url": Config.OLLAMA_BASE_URL,
+            "api_key": None,
+            "temperature": Config.MODEL_TEMPERATURE,
+            "max_tokens": Config.MODEL_MAX_TOKENS,
+        }
+    }
+
+
+class LLMConfigUpdate(BaseModel):
+    provider: str
+    model_name: str
+    base_url: str
+    api_key: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+
+
+@app.post("/config/llm")
+def set_llm_config(body: LLMConfigUpdate):
+    """设置 LLM 模型配置并重建 provider"""
+    from backend.services.llm_provider import create_provider, LLMConfig, set_global_provider
+
+    if body.provider not in ("ollama", "openai_compatible"):
+        raise HTTPException(status_code=400, detail=f"不支持的 provider 类型: {body.provider}")
+
+    # 如果前端传回脱敏后的 key（包含 ****），保留数据库中的原始 key
+    api_key = body.api_key
+    if api_key and "****" in api_key:
+        saved = get_config("llm_config", default=None)
+        api_key = saved.get("api_key") if isinstance(saved, dict) else None
+
+    config = LLMConfig(
+        provider=body.provider,
+        model_name=body.model_name,
+        base_url=body.base_url,
+        api_key=api_key,
+        temperature=body.temperature if body.temperature is not None else Config.MODEL_TEMPERATURE,
+        max_tokens=body.max_tokens if body.max_tokens is not None else Config.MODEL_MAX_TOKENS,
+    )
+
+    try:
+        provider = create_provider(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"无法创建 LLM 客户端: {str(e)}")
+
+    config_dict = {
+        "provider": config.provider,
+        "model_name": config.model_name,
+        "base_url": config.base_url,
+        "api_key": config.api_key,
+        "temperature": config.temperature,
+        "max_tokens": config.max_tokens,
+    }
+    set_config("llm_config", config_dict)
+    set_global_provider(provider)
+
+    # 返回脱敏后的配置
+    response_config = {**config_dict, "api_key": _mask_api_key(config.api_key)}
+    logger.info(f"LLM 模型已切换: {config.provider}/{config.model_name} @ {config.base_url}")
+    return {"success": True, "config": response_config, "message": "模型配置已更新"}
+
+
+@app.get("/config/llm/models")
+def list_ollama_models(base_url: Optional[str] = None):
+    """列出 Ollama 服务上的可用模型"""
+    if base_url:
+        url = base_url
+    else:
+        saved = get_config("llm_config", default=None)
+        if isinstance(saved, dict):
+            url = saved.get("base_url", Config.OLLAMA_BASE_URL)
+        else:
+            url = Config.OLLAMA_BASE_URL
+    try:
+        import httpx
+        resp = httpx.get(f"{url}/api/tags", timeout=5.0)
+        resp.raise_for_status()
+        models = resp.json().get("models", [])
+        return {
+            "success": True,
+            "models": [
+                {"name": m["name"], "size": m.get("size", 0), "modified_at": m.get("modified_at", "")}
+                for m in models
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"无法连接 Ollama 服务: {str(e)}")
+
+
+@app.get("/config/llm/status")
+def check_llm_status():
+    """检查 LLM 模型连接状态（使用轻量级 API，不消耗 GPU）"""
+    try:
+        from backend.services.llm_provider import get_global_provider
+        provider = get_global_provider()
+        import httpx
+        if provider.provider_type == "ollama":
+            # 使用 /api/tags 轻量级检查
+            base_url = provider._base_url
+            resp = httpx.get(f"{base_url}/api/tags", timeout=5.0)
+            resp.raise_for_status()
+            # 验证模型存在
+            models = resp.json().get("models", [])
+            model_names = [m["name"] for m in models]
+            if provider.model_name not in model_names:
+                return {
+                    "success": False,
+                    "status": "error",
+                    "detail": f"模型 {provider.model_name} 未找到，可用模型: {', '.join(model_names[:5])}",
+                }
+        else:
+            # OpenAI 兼容: 使用 /v1/models 轻量级检查
+            headers = {}
+            if provider._api_key:
+                headers["Authorization"] = f"Bearer {provider._api_key}"
+            resp = httpx.get(f"{provider._base_url}/v1/models", headers=headers, timeout=5.0)
+            resp.raise_for_status()
+        return {
+            "success": True,
+            "status": "connected",
+            "provider": provider.provider_type,
+            "model": provider.model_name,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "status": "error",
+            "detail": str(e),
+        }
+
 @app.get("/health")
 def health_check():
     """健康检查"""

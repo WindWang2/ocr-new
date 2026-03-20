@@ -295,26 +295,30 @@ class InstrumentLibrary:
 class MultimodalModelReader:
     """多模态大模型读取器（Ollama 后端）"""
 
-    def __init__(self, model_name: str = None, base_url: str = None):
+    def __init__(self, model_name: str = None, base_url: str = None, provider=None):
         """
         初始化模型
         Args:
             model_name: 模型名称，默认从配置读取
             base_url: API地址，默认从配置读取
+            provider: LLM Provider 实例（可选，传入时忽略 model_name/base_url）
         """
-        self.base_url = base_url or Config.OLLAMA_BASE_URL
-        self.model_name = model_name or Config.OLLAMA_QWEN_MODEL
+        if provider is not None:
+            self._provider = provider
+            self.model_name = provider.model_name
+            self.base_url = ""
+        else:
+            self.base_url = base_url or Config.OLLAMA_BASE_URL
+            self.model_name = model_name or Config.OLLAMA_QWEN_MODEL
 
-        # 导入 Ollama 客户端
-        try:
-            import ollama
-            self.ollama = ollama
-        except ImportError:
-            raise ImportError(
-                "请安装 ollama Python 客户端:\n"
-                "  pip install ollama"
-            )
-        logger.info("使用 Ollama 后端 (%s), 模型: %s", self.base_url, self.model_name)
+            from backend.services.llm_provider import OllamaProvider, LLMConfig
+            self._provider = OllamaProvider(LLMConfig(
+                provider="ollama",
+                model_name=self.model_name,
+                base_url=self.base_url,
+            ))
+
+        logger.info("使用 LLM 后端, 模型: %s", self.model_name)
 
     def encode_image(self, image_path: str) -> str:
         """将图片编码为base64"""
@@ -335,23 +339,13 @@ class MultimodalModelReader:
                 image_data = f.read()
             base64_image = base64.b64encode(image_data).decode('utf-8')
 
-            # 调用 Ollama API
-            response = self.ollama.chat(
-                model=self.model_name,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt,
-                        "images": [base64_image]
-                    }
-                ],
-                options={
-                    "temperature": Config.MODEL_TEMPERATURE,
-                    "num_predict": Config.MODEL_MAX_TOKENS,
-                }
+            # 调用 LLM Provider
+            result_text = self._provider.chat(
+                messages=[{"role": "user", "content": prompt}],
+                images=[base64_image],
+                temperature=Config.MODEL_TEMPERATURE,
+                max_tokens=Config.MODEL_MAX_TOKENS,
             )
-
-            result_text = response.message.content
             logger.debug("Ollama 模型原始响应: %s", result_text[:500] if len(result_text) > 500 else result_text)
 
             parsed = self._parse_json_response(result_text)
@@ -489,17 +483,22 @@ class MultimodalModelReader:
 class InstrumentReader:
     """仪器读数主类 - 仅使用多模态模型"""
 
-    def __init__(self, model_name: str = None):
+    def __init__(self, model_name: str = None, provider=None):
         """
         初始化仪器读数系统
         Args:
             model_name: 多模态模型名称，默认从配置读取
+            provider: LLM Provider 实例（可选）
         """
         logger.info("初始化仪器读数系统...")
-        logger.info("后端: Ollama")
-        logger.info("模型: %s", model_name or Config.OLLAMA_QWEN_MODEL)
-
-        self.mm_reader = MultimodalModelReader(model_name=model_name)
+        if provider is not None:
+            logger.info("后端: %s", provider.provider_type)
+            logger.info("模型: %s", provider.model_name)
+            self.mm_reader = MultimodalModelReader(provider=provider)
+        else:
+            logger.info("后端: Ollama")
+            logger.info("模型: %s", model_name or Config.OLLAMA_QWEN_MODEL)
+            self.mm_reader = MultimodalModelReader(model_name=model_name)
 
         logger.info("系统初始化完成！")
 

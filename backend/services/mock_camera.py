@@ -55,8 +55,9 @@ class MockCameraClient:
             import sys
             sys.path.insert(0, str(PROJECT_ROOT))
             from instrument_reader import InstrumentReader
+            from backend.services.llm_provider import get_global_provider
 
-            reader = InstrumentReader()
+            reader = InstrumentReader(provider=get_global_provider())
             result = reader.read_instrument(str(image_path))
         except Exception as e:
             logger.error(f"[Mock 相机{self.camera_id}] OCR 失败: {e}")
