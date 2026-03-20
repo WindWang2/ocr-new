@@ -23,7 +23,7 @@ class MockCameraClient:
 
     def __init__(self, camera_id: int):
         self.camera_id = camera_id
-        self.image_dir = PROJECT_ROOT / "camera_images" / f"camera_{camera_id}"
+        self.image_dir = PROJECT_ROOT / "camera_images" / f"F{camera_id}"
 
     def _find_latest_image(self) -> Path | None:
         """返回图片目录中修改时间最新的图片，找不到返回 None"""

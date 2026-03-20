@@ -192,7 +192,7 @@ export default function Home() {
 
                 {mockEnabled && (
                   <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mt-1">
-                    已开启：拍照将读取 camera_images/camera_&#123;id&#125;/ 目录最新图片
+                    已开启：拍照将读取 camera_images/F&#123;id&#125;/ 目录最新图片
                   </p>
                 )}
               </div>
