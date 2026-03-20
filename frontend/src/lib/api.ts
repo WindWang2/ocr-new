@@ -56,3 +56,15 @@ export async function captureReading(
 export function exportUrl(experimentId: number): string {
   return `${BASE}/experiments/${experimentId}/export`
 }
+
+export async function getMockConfig(): Promise<boolean> {
+  const data = await request<{ mock_enabled: boolean }>('/config/mock')
+  return data.mock_enabled
+}
+
+export async function setMockConfig(enabled: boolean): Promise<void> {
+  await request('/config/mock', {
+    method: 'POST',
+    body: JSON.stringify({ enabled }),
+  })
+}

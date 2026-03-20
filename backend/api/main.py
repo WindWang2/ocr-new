@@ -31,10 +31,12 @@ from backend.models.database import (
     create_experiment,
     get_experiment, list_experiments, delete_experiment,
     create_reading, get_readings_by_experiment, get_connection,
+    get_config, set_config,
 )
 from backend.services.camera_control import (
     CameraClient, get_all_enabled_cameras
 )
+from backend.services.mock_camera import MockCameraClient
 from config import Config
 
 # 日志配置
@@ -198,11 +200,10 @@ def run_experiment_field(exp_id: int, body: ExperimentRunField):
     existing = [r for r in experiment["readings"] if r["field_key"] == body.field_key]
     run_index = len(existing) + 1
 
-    # 调用相机拍照并 OCR
-    # CameraClient.trigger_and_read() 返回 (success: bool, result: dict)
-    # result 结构: {"camera_id", "raw_response", "reading"(OCR字符串), "timestamp", "success"}
+    # 调用相机拍照并 OCR（根据 mock 开关选择真实或模拟客户端）
+    mock_enabled = get_config("mock_camera_enabled", default=False)
     try:
-        client = CameraClient(camera_id=body.camera_id)
+        client = MockCameraClient(camera_id=body.camera_id) if mock_enabled else CameraClient(camera_id=body.camera_id)
         success, result = client.trigger_and_read()
     except Exception as e:
         logger.error(f"相机 {body.camera_id} 拍照失败: {e}")
@@ -349,6 +350,27 @@ def export_experiment(exp_id: int):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ==================== 系统配置 API ====================
+
+@app.get("/config/mock")
+def get_mock_config():
+    """获取 Mock 相机模式开关状态"""
+    enabled = get_config("mock_camera_enabled", default=False)
+    return {"mock_enabled": bool(enabled)}
+
+
+class MockConfigUpdate(BaseModel):
+    enabled: bool
+
+
+@app.post("/config/mock")
+def set_mock_config(body: MockConfigUpdate):
+    """设置 Mock 相机模式开关"""
+    set_config("mock_camera_enabled", body.enabled)
+    logger.info(f"Mock 相机模式已{'开启' if body.enabled else '关闭'}")
+    return {"mock_enabled": body.enabled, "message": f"Mock 模式已{'开启' if body.enabled else '关闭'}"}
 
 
 # ==================== 工具 API ====================

@@ -88,6 +88,14 @@ def init_db():
         )
     """)
 
+    # 系统配置键值表
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS system_config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
     print(f"[DB] 初始化完成: {DB_PATH}")
@@ -276,6 +284,33 @@ def get_readings_by_experiment(experiment_id: int) -> List[dict]:
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def get_config(key: str, default=None):
+    """读取系统配置值"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM system_config WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return default
+    try:
+        return json.loads(row["value"])
+    except (json.JSONDecodeError, TypeError):
+        return row["value"]
+
+
+def set_config(key: str, value) -> None:
+    """写入系统配置值"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)",
+        (key, json.dumps(value)),
+    )
+    conn.commit()
+    conn.close()
 
 
 if __name__ == "__main__":
