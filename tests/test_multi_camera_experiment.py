@@ -76,7 +76,7 @@ def test_create_single():
     log(f"✗ 单相机创建失败: {r.get('error')}", RED)
     return None
 
-def test_create_multi(count):
+def _test_create_multi(count):
     r = api_call("/experiments", "POST", {
         "name": f"{count}相机实验",
         "camera_ids": list(range(1, count+1))
@@ -93,7 +93,7 @@ def test_create_multi(count):
     log(f"✗ {count}相机创建失败", RED)
     return None
 
-def test_run(exp_id):
+def _test_run(exp_id):
     r = api_call(f"/experiments/{exp_id}/run", "POST")
     if r.get("ok"):
         log(f"✓ 执行成功: 相机={r['data'].get('camera_ids')}", GREEN)
@@ -102,7 +102,7 @@ def test_run(exp_id):
     log(f"✗ 执行失败: {r.get('error')}", RED)
     return None
 
-def test_detail(exp_id):
+def _test_detail(exp_id):
     r = api_call(f"/experiments/{exp_id}")
     if r.get("ok"):
         exp = r["data"].get("experiment", {})
@@ -130,34 +130,34 @@ def main():
     exp = test_create_single()
     results["单相机创建"] = bool(exp)
     if exp:
-        r = test_run(exp)
+        r = _test_run(exp)
         results["单相机执行"] = bool(r)
-        results["单相机详情"] = test_detail(exp)
+        results["单相机详情"] = _test_detail(exp)
     
     # 1相机
-    exp = test_create_multi(1)
+    exp = _test_create_multi(1)
     results["1相机创建"] = bool(exp)
     if exp:
-        r = test_run(exp)
+        r = _test_run(exp)
         results["1相机执行"] = bool(r)
-        results["1相机详情"] = test_detail(exp)
+        results["1相机详情"] = _test_detail(exp)
     
     # 3相机
-    exp = test_create_multi(3)
+    exp = _test_create_multi(3)
     results["3相机创建"] = bool(exp)
     if exp:
-        r = test_run(exp)
+        r = _test_run(exp)
         results["3相机执行"] = bool(r)
-        results["3相机详情"] = test_detail(exp)
+        results["3相机详情"] = _test_detail(exp)
     
     # 5相机
     if len(cameras) >= 5:
-        exp = test_create_multi(5)
+        exp = _test_create_multi(5)
         results["5相机创建"] = bool(exp)
         if exp:
-            r = test_run(exp)
+            r = _test_run(exp)
             results["5相机执行"] = bool(r)
-            results["5相机详情"] = test_detail(exp)
+            results["5相机详情"] = _test_detail(exp)
     
     # 汇总
     log("\n" + "=" * 50, YELLOW)

@@ -1,0 +1,22 @@
+{
+  "timestamp": "2026-03-16T23:28:03.232163",
+  "image_path": "camera_images/camera_0/1.jpg",
+  "call_type": "read",
+  "model": "qwen3.5:latest",
+  "prompt": "这是臭氧混调器，读取显示数值：segment1_speed(rpm)、segment1_time(s)、segment2_speed(rpm)、segment2_time(s)、segment3_speed(rpm)、segment3_time(s)、current_segment()、current_speed(rpm)\n\n特别注意：\n- 读取段一参数：转速(segment1_speed)和时间(segment1_time)\n- 读取段二参数：转速(segment2_speed)和时间(segment2_time)\n- 读取段三参数：转速(segment3_speed)和时间(segment3_time)\n- 读取当前段数(current_segment)和当前转速(current_speed)\n- 转速单位是rpm，时间单位是秒\n【重要】你必须严格按照以下JSON格式输出，不要输出任何其他内容：\n\n{\"instrument_type\": \"ozone_mixer\", \"readings\": {\"segment1_speed\": 0.0, \"segment1_time\": 0.0, ...",
+  "raw_response": "{\"instrument_type\": \"ozone_mixer\", \"readings\": {\"segment1_speed\": 10000, \"segment1_time\": 20, \"segment2_speed\": 16000, \"segment2_time\": 20, \"segment3_speed\": 22000, \"segment3_time\": 20, \"current_segment\": 1, \"current_speed\": 0}, \"confidence\": 0.95}",
+  "parsed_response": {
+    "instrument_type": "ozone_mixer",
+    "readings": {
+      "segment1_speed": 10000,
+      "segment1_time": 20,
+      "segment2_speed": 16000,
+      "segment2_time": 20,
+      "segment3_speed": 22000,
+      "segment3_time": 20,
+      "current_segment": 1,
+      "current_speed": 0
+    },
+    "confidence": 0.95
+  }
+}
