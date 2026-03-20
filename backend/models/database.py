@@ -134,41 +134,28 @@ def get_camera_by_id(camera_id: int) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def create_experiment(name: str, description: str = None, 
-                     camera_ids: List[int] = None, camera_id: int = None) -> int:
-    """
-    创建实验记录
-    
-    Args:
-        name: 实验名称
-        description: 实验描述
-        camera_ids: 多相机模式 - 相机ID列表
-        camera_id: 单相机模式 - 相机ID (兼容旧逻辑)
-    
-    Returns:
-        实验ID
-    """
+def create_experiment(
+    name: str,
+    exp_type: str,
+    manual_params: dict = None,
+    camera_configs: list = None,
+    description: str = None,
+) -> int:
+    """创建实验记录，支持新的 type/manual_params/camera_configs 字段"""
+    import json
     conn = get_connection()
     cursor = conn.cursor()
-    
-    # 兼容旧逻辑：单相机模式
-    camera_ids_str = None
-    single_camera_id = None
-    
-    if camera_ids and len(camera_ids) > 1:
-        # 多相机模式
-        camera_ids_str = ",".join(map(str, camera_ids))
-    elif camera_ids and len(camera_ids) == 1:
-        # 单相机
-        single_camera_id = camera_ids[0]
-    elif camera_id:
-        # 旧字段
-        single_camera_id = camera_id
-    
     cursor.execute(
-        """INSERT INTO experiments (name, description, camera_id, camera_ids, status, started_at)
-           VALUES (?, ?, ?, ?, 'running', ?)""",
-        (name, description, single_camera_id, camera_ids_str, datetime.now().isoformat())
+        """INSERT INTO experiments (name, description, type, manual_params, camera_configs, status, started_at)
+           VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
+        (
+            name,
+            description,
+            exp_type,
+            json.dumps(manual_params or {}, ensure_ascii=False),
+            json.dumps(camera_configs or [], ensure_ascii=False),
+            datetime.now().isoformat(),
+        ),
     )
     conn.commit()
     exp_id = cursor.lastrowid
