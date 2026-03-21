@@ -99,3 +99,15 @@ export async function listOllamaModels(baseUrl?: string): Promise<OllamaModel[]>
 export async function checkLLMStatus(): Promise<{ success: boolean; status: LLMStatus; model?: string; provider?: string; detail?: string }> {
   return request('/config/llm/status')
 }
+
+export async function getImageDir(): Promise<string> {
+  const data = await request<{ image_dir: string }>('/config/image-dir')
+  return data.image_dir
+}
+
+export async function setImageDir(imageDir: string): Promise<void> {
+  await request('/config/image-dir', {
+    method: 'POST',
+    body: JSON.stringify({ image_dir: imageDir }),
+  })
+}

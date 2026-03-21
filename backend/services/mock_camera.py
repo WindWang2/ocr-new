@@ -17,13 +17,16 @@ class MockCameraClient:
     """
     模拟相机客户端，接口与 CameraClient 完全相同。
 
-    读取 camera_images/camera_{id}/ 目录下修改时间最新的图片，
+    读取 image_dir/F{id}/ 目录下修改时间最新的图片，
     调用 InstrumentReader 做 OCR，返回第一个可解析为 float 的读数。
     """
 
-    def __init__(self, camera_id: int):
+    def __init__(self, camera_id: int, image_dir: str | None = None):
         self.camera_id = camera_id
-        self.image_dir = PROJECT_ROOT / "camera_images" / f"F{camera_id}"
+        if image_dir:
+            self.image_dir = Path(image_dir) / f"F{camera_id}"
+        else:
+            self.image_dir = PROJECT_ROOT / "camera_images" / f"F{camera_id}"
 
     def _find_latest_image(self) -> Path | None:
         """返回图片目录中修改时间最新的图片，找不到返回 None"""

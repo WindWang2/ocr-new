@@ -203,7 +203,8 @@ def run_experiment_field(exp_id: int, body: ExperimentRunField):
     # 调用相机拍照并 OCR（根据 mock 开关选择真实或模拟客户端）
     mock_enabled = get_config("mock_camera_enabled", default=False)
     try:
-        client = MockCameraClient(camera_id=body.camera_id) if mock_enabled else CameraClient(camera_id=body.camera_id)
+        image_dir = get_config("image_dir", default=None) or None
+        client = MockCameraClient(camera_id=body.camera_id, image_dir=image_dir) if mock_enabled else CameraClient(camera_id=body.camera_id)
         success, result = client.trigger_and_read()
     except Exception as e:
         logger.error(f"相机 {body.camera_id} 拍照失败: {e}")
@@ -371,6 +372,25 @@ def set_mock_config(body: MockConfigUpdate):
     set_config("mock_camera_enabled", body.enabled)
     logger.info(f"Mock 相机模式已{'开启' if body.enabled else '关闭'}")
     return {"mock_enabled": body.enabled, "message": f"Mock 模式已{'开启' if body.enabled else '关闭'}"}
+
+
+@app.get("/config/image-dir")
+def get_image_dir():
+    """获取图片存储目录配置"""
+    image_dir = get_config("image_dir", default="")
+    return {"image_dir": image_dir}
+
+
+class ImageDirUpdate(BaseModel):
+    image_dir: str
+
+
+@app.post("/config/image-dir")
+def set_image_dir_config(body: ImageDirUpdate):
+    """设置图片存储目录"""
+    set_config("image_dir", body.image_dir)
+    logger.info(f"图片存储目录已设置为: {body.image_dir}")
+    return {"image_dir": body.image_dir, "message": "图片存储目录已更新"}
 
 
 # ==================== 工具 API ====================

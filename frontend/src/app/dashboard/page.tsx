@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { Experiment, ExperimentSummary, ExperimentType, Reading, CameraFieldConfig, ManualParams, LLMStatus } from '@/types'
-import { listExperiments, getExperiment, createExperiment, deleteExperiment, captureReading, getMockConfig, setMockConfig, checkLLMStatus } from '@/lib/api'
+import { listExperiments, getExperiment, createExperiment, deleteExperiment, captureReading, getMockConfig, setMockConfig, checkLLMStatus, getImageDir, setImageDir } from '@/lib/api'
 import ExperimentList from '@/components/ExperimentList'
 import Step1TypeSelector from '@/components/CreateExperiment/Step1TypeSelector'
 import Step2Config from '@/components/CreateExperiment/Step2Config'
@@ -26,11 +26,13 @@ export default function Dashboard() {
   const [capturing, setCapturing] = useState<string | null>(null)
 
   const [mockEnabled, setMockEnabled] = useState(false)
+  const [imageDir, setImageDirState] = useState('')
   const [showSettings, setShowSettings] = useState(false)
   const [llmStatus, setLlmStatus] = useState<LLMStatus>('unknown')
 
   useEffect(() => {
     getMockConfig().then(setMockEnabled).catch(() => {})
+    getImageDir().then(setImageDirState).catch(() => {})
     checkLLMStatus()
       .then(r => setLlmStatus(r.status))
       .catch(() => setLlmStatus('error'))
@@ -245,8 +247,36 @@ export default function Dashboard() {
 
                   {mockEnabled && (
                     <p className="text-[11px] text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mt-1">
-                      已开启：拍照将读取 camera_images/F&#123;id&#125;/ 目录最新图片
+                      已开启：拍照将读取 image_dir/F&#123;id&#125;/ 目录最新图片
                     </p>
+                  )}
+
+                  {/* 图片存储目录 */}
+                  {mockEnabled && (
+                    <div className="mt-3 pt-3 border-t border-gray-50">
+                      <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">图片存储目录</div>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={imageDir}
+                          onChange={e => setImageDirState(e.target.value)}
+                          placeholder="留空使用默认 camera_images/"
+                          className="flex-1 text-xs border border-gray-200 rounded-lg px-3 py-1.5 bg-gray-50"
+                        />
+                        <button
+                          onClick={async () => {
+                            await setImageDir(imageDir).catch(() => {})
+                          }}
+                          className="px-3 py-1.5 text-xs font-medium text-white rounded-lg shrink-0"
+                          style={{ background: 'var(--brand)' }}
+                        >
+                          保存
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-gray-400 mt-1.5">
+                        目录下需有 F0 ~ F8 子文件夹
+                      </p>
+                    </div>
                   )}
 
                   <div className="border-t border-gray-50 mt-3 pt-3">
