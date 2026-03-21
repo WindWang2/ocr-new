@@ -63,7 +63,7 @@ export default function ExperimentList({ experiments, selectedId, onSelect, onNe
         <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
           {experiments.map(exp => {
             const schema = EXPERIMENT_SCHEMAS[exp.type]
-            const style = TYPE_STYLES[exp.type]
+            const style = TYPE_STYLES[exp.type] ?? { bg: 'bg-gray-500/20', text: 'text-gray-300', dot: 'bg-gray-400' }
             const isSelected = selectedId === exp.id
             return (
               <div
