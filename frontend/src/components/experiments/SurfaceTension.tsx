@@ -8,10 +8,10 @@ export default function SurfaceTension({ experiment, onCapture, capturing }: Exp
   const p = experiment.manual_params
 
   return (
-    <div className="space-y-6">
-      <div className="bg-gray-50 rounded-xl p-4">
-        <h3 className="text-sm font-semibold text-gray-600 mb-3">实验参数</h3>
-        <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm">
+    <div className="space-y-5">
+      <div className="bg-gray-50/80 rounded-xl p-4 border border-gray-100">
+        <h3 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-3">实验参数</h3>
+        <div className="grid grid-cols-2 gap-x-8 gap-y-2.5 text-sm">
           <ParamRow label="室内温度" value={p.room_temperature} unit="℃" />
           <ParamRow label="室内湿度" value={p.room_humidity} unit="%" />
           <ParamRow label="样品密度 (25℃)" value={p.sample_density} unit="g/cm³" />
@@ -45,8 +45,11 @@ export default function SurfaceTension({ experiment, onCapture, capturing }: Exp
 function ParamRow({ label, value, unit }: { label: string; value: unknown; unit: string }) {
   return (
     <div className="flex justify-between">
-      <span className="text-gray-500">{label}</span>
-      <span className="font-medium">{value != null ? String(value) : '—'} <span className="text-gray-400 text-xs">{unit}</span></span>
+      <span className="text-gray-400">{label}</span>
+      <span className="font-medium text-gray-700 tabular-nums">
+        {value != null ? String(value) : '—'}
+        <span className="text-gray-300 text-xs ml-1">{unit}</span>
+      </span>
     </div>
   )
 }

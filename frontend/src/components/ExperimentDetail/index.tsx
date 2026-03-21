@@ -25,36 +25,42 @@ export default function ExperimentDetail({ experiment, onCapture, capturing }: P
   const ViewComponent = EXPERIMENT_VIEWS[experiment.type]
 
   return (
-    <div className="bg-white rounded-xl shadow-sm p-6">
-      {/* 顶部 */}
-      <div className="flex justify-between items-start mb-6">
-        <div>
-          <h2 className="text-xl font-bold text-gray-800">{experiment.name}</h2>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-lg">{schema.icon}</span>
-            <span className="text-sm text-gray-500">{schema.label}</span>
-            <span className="text-xs text-gray-400">
-              · 创建于 {new Date(experiment.created_at).toLocaleDateString('zh-CN')}
-            </span>
+    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      {/* Header */}
+      <div className="px-6 py-5 border-b border-gray-100 bg-gradient-to-r from-gray-50/80 to-white">
+        <div className="flex justify-between items-start">
+          <div>
+            <h2 className="text-lg font-bold text-gray-900">{experiment.name}</h2>
+            <div className="flex items-center gap-2 mt-1.5">
+              <span className="text-sm">{schema.icon}</span>
+              <span className="text-xs text-gray-400">{schema.label}</span>
+              <span className="text-gray-200">·</span>
+              <span className="text-xs text-gray-400">
+                {new Date(experiment.created_at).toLocaleDateString('zh-CN')}
+              </span>
+            </div>
           </div>
+          <a
+            href={exportUrl(experiment.id)}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-lg transition hover:opacity-90"
+            style={{ background: 'var(--accent)', color: '#fff' }}
+          >
+            <Download size={14} />
+            导出 Excel
+          </a>
         </div>
-        <a
-          href={exportUrl(experiment.id)}
-          target="_blank"
-          rel="noreferrer"
-          className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium"
-        >
-          <Download size={16} />
-          导出 Excel
-        </a>
       </div>
 
-      {/* 实验内容（按类型分发） */}
-      <ViewComponent
-        experiment={experiment}
-        onCapture={onCapture}
-        capturing={capturing}
-      />
+      {/* Content */}
+      <div className="p-6">
+        <ViewComponent
+          experiment={experiment}
+          onCapture={onCapture}
+          capturing={capturing}
+        />
+      </div>
     </div>
   )
 }

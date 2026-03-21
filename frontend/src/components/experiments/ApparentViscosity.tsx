@@ -8,7 +8,7 @@ export default function ApparentViscosity({ experiment, onCapture, capturing }: 
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-gray-500">
+      <p className="text-xs text-gray-400 leading-relaxed bg-gray-50/80 rounded-lg px-4 py-3 border border-gray-100">
         每个转速字段需拍照 2 次（对应实验1、实验2），系统自动按读取顺序分配 run_index。
       </p>
 

@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { ExperimentType } from '@/types'
 import { EXPERIMENT_TYPE_LIST } from '@/lib/experimentTypes'
-import { ArrowRight } from 'lucide-react'
+import { ArrowRight, Check } from 'lucide-react'
 
 interface Props {
   onNext: (name: string, type: ExperimentType) => void
@@ -23,12 +23,12 @@ export default function Step1TypeSelector({ onNext }: Props) {
   return (
     <div className="space-y-6">
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">实验名称</label>
+        <label className="block text-sm font-medium text-gray-700 mb-2">实验名称</label>
         <input
           type="text"
           value={name}
           onChange={e => setName(e.target.value)}
-          className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm transition hover:border-gray-300"
           placeholder="例如：运动粘度测试-20260320"
         />
       </div>
@@ -40,17 +40,24 @@ export default function Step1TypeSelector({ onNext }: Props) {
             <div
               key={schema.type}
               onClick={() => setType(schema.type)}
-              className={`p-4 rounded-xl border-2 cursor-pointer transition ${
+              className={`relative p-4 rounded-xl border-2 cursor-pointer transition-all duration-200 ${
                 type === schema.type
-                  ? 'border-blue-500 bg-blue-50'
-                  : 'border-gray-200 hover:border-blue-300 hover:bg-gray-50'
+                  ? 'border-brand-500 bg-brand-50/50 shadow-sm'
+                  : 'border-gray-100 hover:border-gray-200 hover:bg-gray-50/50'
               }`}
             >
-              <div className="flex items-center gap-3">
-                <span className="text-2xl">{schema.icon}</span>
+              {type === schema.type && (
+                <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-brand-500 flex items-center justify-center">
+                  <Check size={12} className="text-white" />
+                </div>
+              )}
+              <div className="flex items-center gap-3.5">
+                <div className="w-10 h-10 rounded-xl bg-brand-50 flex items-center justify-center text-lg shrink-0">
+                  {schema.icon}
+                </div>
                 <div>
-                  <div className="font-semibold text-gray-800">{schema.label}</div>
-                  <div className="text-sm text-gray-500 mt-0.5">{schema.description}</div>
+                  <div className="font-semibold text-gray-800 text-sm">{schema.label}</div>
+                  <div className="text-xs text-gray-400 mt-0.5 leading-relaxed">{schema.description}</div>
                 </div>
               </div>
             </div>
@@ -58,14 +65,17 @@ export default function Step1TypeSelector({ onNext }: Props) {
         </div>
       </div>
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && (
+        <p className="text-sm text-red-500 bg-red-50 rounded-lg px-4 py-2">{error}</p>
+      )}
 
       <button
         onClick={handleNext}
-        className="w-full flex items-center justify-center gap-2 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
+        className="w-full flex items-center justify-center gap-2 py-3 text-white text-sm font-medium rounded-xl transition hover:opacity-90 shadow-sm"
+        style={{ background: 'var(--brand)' }}
       >
         下一步
-        <ArrowRight size={18} />
+        <ArrowRight size={16} />
       </button>
     </div>
   )
