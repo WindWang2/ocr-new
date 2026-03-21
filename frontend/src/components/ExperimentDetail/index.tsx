@@ -24,6 +24,14 @@ export default function ExperimentDetail({ experiment, onCapture, capturing }: P
   const schema = EXPERIMENT_SCHEMAS[experiment.type]
   const ViewComponent = EXPERIMENT_VIEWS[experiment.type]
 
+  if (!schema || !ViewComponent) {
+    return (
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 text-center">
+        <p className="text-gray-400 text-sm">不支持的实验类型: {experiment.type}</p>
+      </div>
+    )
+  }
+
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
       {/* Header */}
