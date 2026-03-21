@@ -252,9 +252,8 @@ export default function Dashboard() {
                   )}
 
                   {/* 图片存储目录 */}
-                  {mockEnabled && (
-                    <div className="mt-3 pt-3 border-t border-gray-50">
-                      <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">图片存储目录</div>
+                  <div className="mt-3 pt-3 border-t border-gray-50">
+                    <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">图片存储目录</div>
                       <div className="flex gap-2">
                         <input
                           type="text"
@@ -274,10 +273,9 @@ export default function Dashboard() {
                         </button>
                       </div>
                       <p className="text-[10px] text-gray-400 mt-1.5">
-                        目录下需有 F0 ~ F8 子文件夹
+                        {mockEnabled ? 'Mock 模式' : '拍照模式'}将读取该目录下 F0 ~ F8 子文件夹的最新图片
                       </p>
                     </div>
-                  )}
 
                   <div className="border-t border-gray-50 mt-3 pt-3">
                     <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">LLM 模型</div>
