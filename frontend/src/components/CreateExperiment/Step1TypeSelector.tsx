@@ -8,9 +8,18 @@ interface Props {
   onNext: (name: string, type: ExperimentType) => void
 }
 
+function generateDefaultName(type: ExperimentType | null): string {
+  if (!type) return ''
+  const now = new Date()
+  const date = now.toISOString().slice(0, 10).replace(/-/g, '')
+  const hour = String(now.getHours()).padStart(2, '0')
+  const label = EXPERIMENT_TYPE_LIST.find(s => s.type === type)?.label ?? ''
+  return `${label}-${date}${hour}`
+}
+
 export default function Step1TypeSelector({ onNext }: Props) {
-  const [name, setName] = useState('')
   const [type, setType] = useState<ExperimentType | null>(null)
+  const [name, setName] = useState('')
   const [error, setError] = useState('')
 
   const handleNext = () => {
@@ -39,7 +48,10 @@ export default function Step1TypeSelector({ onNext }: Props) {
           {EXPERIMENT_TYPE_LIST.map(schema => (
             <div
               key={schema.type}
-              onClick={() => setType(schema.type)}
+              onClick={() => {
+                setType(schema.type)
+                if (!name.trim()) setName(generateDefaultName(schema.type))
+              }}
               className={`relative p-4 rounded-xl border-2 cursor-pointer transition-all duration-200 ${
                 type === schema.type
                   ? 'border-brand-500 bg-brand-50/50 shadow-sm'
