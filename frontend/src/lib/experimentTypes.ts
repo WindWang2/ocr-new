@@ -68,6 +68,24 @@ export const EXPERIMENT_SCHEMAS: Record<ExperimentType, ExperimentSchema> = {
       { fieldKey: 'fluid_interface_tension', label: '破胶液界面张力', unit: 'mN/m', maxReadings: 2 },
     ],
   },
+  test: {
+    type: 'test',
+    label: '测试模板',
+    description: '9个相机位置，选择相机后可选读数，支持多次拍照显示图片',
+    icon: '📷',
+    manualParams: [],
+    cameraFields: [
+      { fieldKey: 'F0', label: '位置0', unit: '', maxReadings: 99 },
+      { fieldKey: 'F1', label: '位置1', unit: '', maxReadings: 99 },
+      { fieldKey: 'F2', label: '位置2', unit: '', maxReadings: 99 },
+      { fieldKey: 'F3', label: '位置3', unit: '', maxReadings: 99 },
+      { fieldKey: 'F4', label: '位置4', unit: '', maxReadings: 99 },
+      { fieldKey: 'F5', label: '位置5', unit: '', maxReadings: 99 },
+      { fieldKey: 'F6', label: '位置6', unit: '', maxReadings: 99 },
+      { fieldKey: 'F7', label: '位置7', unit: '', maxReadings: 99 },
+      { fieldKey: 'F8', label: '位置8', unit: '', maxReadings: 99 },
+    ],
+  },
 }
 
 export const EXPERIMENT_TYPE_LIST = Object.values(EXPERIMENT_SCHEMAS)

@@ -1,4 +1,4 @@
-import { Experiment, ExperimentSummary, Reading, CameraFieldConfig, ManualParams, ExperimentType, LLMConfig, OllamaModel, LLMStatus } from '@/types'
+import { Experiment, ExperimentSummary, Reading, CameraFieldConfig, ManualParams, ExperimentType, LLMConfig, LLMModel, LLMStatus } from '@/types'
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || '/api'
 
@@ -90,14 +90,53 @@ export async function setLLMConfig(config: LLMConfig): Promise<void> {
   })
 }
 
-export async function listOllamaModels(baseUrl?: string): Promise<OllamaModel[]> {
+export async function listLLMModels(baseUrl?: string): Promise<LLMModel[]> {
   const query = baseUrl ? `?base_url=${encodeURIComponent(baseUrl)}` : ''
-  const data = await request<{ success: boolean; models: OllamaModel[] }>(`/config/llm/models${query}`)
+  const data = await request<{ success: boolean; models: LLMModel[] }>(`/config/llm/models${query}`)
   return data.models
 }
 
 export async function checkLLMStatus(): Promise<{ success: boolean; status: LLMStatus; model?: string; provider?: string; detail?: string }> {
   return request('/config/llm/status')
+}
+
+export async function getCameraInstruments(): Promise<Record<string, { name: string; readings: { key: string; label: string; unit: string }[] }>> {
+  const data = await request<{ success: boolean; cameras: Record<string, { name: string; readings: { key: string; label: string; unit: string }[] }> }>('/config/camera-instruments')
+  return data.cameras
+}
+
+export async function captureImage(
+  experimentId: number,
+  cameraId: number,
+): Promise<{ success: boolean; image_path?: string; camera_id?: number; detail?: string }> {
+  const data = await request<{ success: boolean; image_path?: string; camera_id?: number; detail?: string }>(
+    `/experiments/${experimentId}/capture`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ camera_id: cameraId }),
+    },
+  )
+  if (!data.success) throw new Error(data.detail || '拍照失败')
+  return data
+}
+
+export async function runTestCapture(
+  experimentId: number,
+  fieldKey: string,
+  cameraId: number,
+  imagePath?: string,
+): Promise<{ success: boolean; readings?: Reading[]; detail?: string }> {
+  const body: Record<string, unknown> = { field_key: fieldKey, camera_id: cameraId }
+  if (imagePath) body.image_path = imagePath
+  const data = await request<{ success: boolean; readings?: Reading[]; detail?: string }>(
+    `/experiments/${experimentId}/run-test`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    },
+  )
+  if (!data.success) throw new Error(data.detail || '识别失败')
+  return data
 }
 
 export async function getImageDir(): Promise<string> {

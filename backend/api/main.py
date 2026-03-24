@@ -11,6 +11,7 @@ OCR 实验 API 服务
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
@@ -65,6 +66,49 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 静态文件：挂载图片目录，供前端访问拍照图片
+_images_dir = Path("camera_images")
+_images_dir.mkdir(exist_ok=True)
+app.mount("/images", StaticFiles(directory=str(_images_dir)), name="images")
+
+
+def _convert_and_save_image(raw_path: str, camera_id: int, run_index: int) -> Optional[str]:
+    """
+    将相机拍摄的图片（可能是BMP）转换为JPG格式，缩放最长边到500px，保存到 camera_images/ 目录。
+    返回相对于 camera_images/ 的路径（如 F0/001.jpg），供前端通过 /images/ 访问。
+    """
+    from PIL import Image
+
+    src = Path(raw_path)
+    if not src.exists():
+        return None
+
+    try:
+        img = Image.open(src).convert("RGB")
+    except Exception as e:
+        logger.warning(f"无法打开图片 {raw_path}: {e}")
+        return None
+
+    # 缩放：最长边 500px
+    max_size = 500
+    w, h = img.size
+    if max(w, h) > max_size:
+        scale = max_size / max(w, h)
+        new_w, new_h = int(w * scale), int(h * scale)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+
+    # 保存到 camera_images/F{camera_id}/ 目录
+    save_dir = _images_dir / f"F{camera_id}"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    save_name = f"{run_index:03d}.jpg"
+    save_path = save_dir / save_name
+    img.save(str(save_path), "JPEG", quality=85)
+
+    # 返回相对路径
+    relative = f"F{camera_id}/{save_name}"
+    logger.info(f"图片已保存: {save_path} ({img.size[0]}x{img.size[1]})")
+    return relative
+
 
 # ==================== 请求模型 ====================
 
@@ -79,6 +123,7 @@ class CameraConfigItem(BaseModel):
     field_key: str
     camera_id: int
     max_readings: int
+    selected_readings: Optional[List[str]] = None
 
 
 class ExperimentCreate(BaseModel):
@@ -91,6 +136,10 @@ class ExperimentCreate(BaseModel):
 
 class ExperimentRunField(BaseModel):
     field_key: str
+    camera_id: int
+
+
+class ExperimentCaptureBody(BaseModel):
     camera_id: int
 
 
@@ -168,7 +217,7 @@ def get_experiment_api(exp_id: int):
 @app.post("/experiments")
 def create_experiment_api(exp: ExperimentCreate):
     """创建实验记录"""
-    VALID_TYPES = {"kinematic_viscosity", "apparent_viscosity", "surface_tension"}
+    VALID_TYPES = {"kinematic_viscosity", "apparent_viscosity", "surface_tension", "test"}
     if exp.type not in VALID_TYPES:
         raise HTTPException(status_code=400, detail=f"无效实验类型: {exp.type}")
     try:
@@ -221,16 +270,249 @@ def run_experiment_field(exp_id: int, body: ExperimentRunField):
         logger.error(f"相机 {body.camera_id} OCR 结果无法解析为数字: {raw_reading!r}")
         return {"success": False, "detail": f"OCR 结果无法解析: {raw_reading}"}
 
+    # 处理图片：BMP转JPG + 缩放
+    saved_image_path = None
+    raw_image_path = result.get("image_path")
+    if raw_image_path:
+        saved_image_path = _convert_and_save_image(raw_image_path, body.camera_id, run_index)
+
     reading = create_reading(
         experiment_id=exp_id,
         field_key=body.field_key,
         camera_id=body.camera_id,
         value=value,
         run_index=run_index,
-        confidence=None,   # trigger_and_read() 不返回置信度
-        image_path=None,   # trigger_and_read() 不返回图片路径
+        confidence=result.get("confidence"),
+        image_path=saved_image_path,
     )
     return {"success": True, "reading": reading}
+
+
+@app.post("/experiments/{exp_id}/capture")
+def capture_image_endpoint(exp_id: int, body: ExperimentCaptureBody):
+    """
+    仅拍照并保存图片（不做OCR），立即返回图片路径供前端显示。
+    前端收到图片后可立即展示，再调用 /run-test 进行 OCR。
+    """
+    experiment = get_experiment(exp_id)
+    if not experiment:
+        raise HTTPException(status_code=404, detail="实验不存在")
+
+    mock_enabled = get_config("mock_camera_enabled", default=False)
+    image_dir_config = get_config("image_dir", default=None) or None
+
+    try:
+        if mock_enabled:
+            client = MockCameraClient(camera_id=body.camera_id, image_dir=image_dir_config)
+            success, result = client.capture_image()
+        else:
+            client = CameraClient(camera_id=body.camera_id)
+            success, result = client.trigger_and_read()
+    except Exception as e:
+        logger.error(f"相机 {body.camera_id} 拍照失败: {e}")
+        return {"success": False, "detail": f"相机连接失败: {e}"}
+
+    if not success:
+        return {"success": False, "detail": result.get("error", "拍照失败")}
+
+    raw_image_path = result.get("image_path")
+    if not raw_image_path:
+        return {"success": False, "detail": "未获取到图片"}
+
+    # 计算该相机的下一个 run_index
+    existing_images = set(
+        r.get("image_path") for r in experiment["readings"]
+        if r.get("image_path") and r["camera_id"] == body.camera_id
+    )
+    run_index = len(existing_images) + 1
+
+    saved_image_path = _convert_and_save_image(raw_image_path, body.camera_id, run_index)
+    return {"success": True, "image_path": saved_image_path, "camera_id": body.camera_id}
+
+
+class ExperimentRunTestBody(BaseModel):
+    field_key: str
+    camera_id: int
+    image_path: Optional[str] = None
+
+
+@app.post("/experiments/{exp_id}/run-test")
+def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
+    """
+    测试模板 OCR 识别。
+    如果提供 image_path 则跳过拍照，直接对指定图片做 OCR。
+    """
+    experiment = get_experiment(exp_id)
+    if not experiment:
+        raise HTTPException(status_code=404, detail="实验不存在")
+
+    saved_image_path = body.image_path
+
+    if not saved_image_path:
+        # 未提供 image_path，执行完整拍照+OCR
+        mock_enabled = get_config("mock_camera_enabled", default=False)
+        try:
+            image_dir = get_config("image_dir", default=None) or None
+            client = MockCameraClient(camera_id=body.camera_id, image_dir=image_dir) if mock_enabled else CameraClient(camera_id=body.camera_id)
+            success, result = client.trigger_and_read()
+        except Exception as e:
+            logger.error(f"相机 {body.camera_id} 拍照失败: {e}")
+            return {"success": False, "detail": f"相机连接失败: {e}"}
+
+        if not success:
+            return {"success": False, "detail": result.get("error", "OCR 识别失败")}
+
+        raw_image_path = result.get("image_path")
+        if raw_image_path:
+            saved_image_path = _convert_and_save_image(raw_image_path, body.camera_id, 0)
+
+    if not saved_image_path:
+        return {"success": False, "detail": "无可用图片"}
+
+    # 对保存的图片做 OCR
+    full_image_path = str(_images_dir / saved_image_path)
+    try:
+        from instrument_reader import InstrumentReader
+        from backend.services.llm_provider import get_global_provider
+        reader = InstrumentReader(provider=get_global_provider())
+        ocr_result = reader.read_instrument(full_image_path)
+    except Exception as e:
+        logger.error(f"OCR 失败: {e}")
+        return {"success": False, "detail": f"OCR 识别失败: {e}"}
+
+    if not ocr_result.get("success"):
+        return {"success": False, "detail": ocr_result.get("error", "OCR 识别失败")}
+
+    # 存储所有 OCR 读数
+    raw_response = ocr_result.get("readings", {})
+    try:
+        readings_dict = json.loads(str(raw_response)) if raw_response else {}
+    except (json.JSONDecodeError, TypeError):
+        readings_dict = raw_response if isinstance(raw_response, dict) else {}
+
+    all_readings = []
+    for key, value in readings_dict.items():
+        try:
+            str_val = str(value).strip()
+            # time 字段可能是 "MM:SS" 格式，转为秒数（float）
+            if key == "time" and ":" in str_val:
+                parts = str_val.split(":")
+                if len(parts) == 2:
+                    float_val = float(parts[0]) * 60 + float(parts[1])
+                else:
+                    continue
+            else:
+                float_val = float(str_val)
+        except (ValueError, TypeError):
+            continue
+        existing = [r for r in experiment["readings"] if r["field_key"] == key]
+        run_index = len(existing) + 1
+        reading = create_reading(
+            experiment_id=exp_id,
+            field_key=key,
+            camera_id=body.camera_id,
+            value=float_val,
+            run_index=run_index,
+            confidence=ocr_result.get("confidence"),
+            image_path=saved_image_path,
+        )
+        all_readings.append(reading)
+
+    return {"success": True, "readings": all_readings}
+
+
+@app.get("/config/camera-instruments")
+def get_camera_instruments():
+    """返回相机编号到仪器的映射"""
+    CAMERA_INSTRUMENTS = {
+        "F0": {
+            "name": "超级吴英混调器",
+            "readings": [
+                {"key": "seg1_speed", "label": "段一转速", "unit": "转"},
+                {"key": "seg1_time", "label": "段一时间", "unit": "S"},
+                {"key": "seg2_speed", "label": "段二转速", "unit": "转"},
+                {"key": "seg2_time", "label": "段二时间", "unit": "S"},
+                {"key": "seg3_speed", "label": "段三转速", "unit": "转"},
+                {"key": "seg3_time", "label": "段三时间", "unit": "S"},
+                {"key": "total_time", "label": "总时长", "unit": "S"},
+                {"key": "remaining_time", "label": "剩余时长", "unit": "S"},
+                {"key": "current_segment", "label": "当前段数", "unit": ""},
+                {"key": "current_speed", "label": "当前转速", "unit": "转"},
+                {"key": "high_speed", "label": "高速转速", "unit": "转"},
+                {"key": "high_time", "label": "高速时间", "unit": "S"},
+                {"key": "low_speed", "label": "低速转速", "unit": "转"},
+                {"key": "low_time", "label": "低速时间", "unit": "S"},
+            ],
+        },
+        "F1": {
+            "name": "电子天枰1号",
+            "readings": [{"key": "weight", "label": "重量", "unit": "g"}],
+        },
+        "F2": {
+            "name": "电子天枰2号",
+            "readings": [{"key": "weight", "label": "重量", "unit": "g"}],
+        },
+        "F3": {
+            "name": "PH仪",
+            "readings": [
+                {"key": "ph_value", "label": "pH值", "unit": ""},
+                {"key": "temperature", "label": "温度", "unit": "°C"},
+                {"key": "pts", "label": "PTS值", "unit": "%PTS"},
+            ],
+        },
+        "F4": {
+            "name": "水质检测仪",
+            "readings": [
+                {"key": "date", "label": "检测日期", "unit": ""},
+                {"key": "blank_value", "label": "空白值", "unit": ""},
+                {"key": "test_value", "label": "检测值", "unit": ""},
+                {"key": "absorbance", "label": "吸光度", "unit": ""},
+                {"key": "content_mg_l", "label": "含量", "unit": "mg/L"},
+                {"key": "transmittance", "label": "透光度", "unit": "%"},
+                {"key": "mode", "label": "量程模式", "unit": ""},
+            ],
+        },
+        "F5": {
+            "name": "表界面张力仪",
+            "readings": [
+                {"key": "tension", "label": "张力", "unit": "mN/m"},
+                {"key": "temperature", "label": "温度", "unit": "°C"},
+                {"key": "upper_density", "label": "上层密度", "unit": "g/cm³"},
+                {"key": "lower_density", "label": "下层密度", "unit": "g/cm³"},
+                {"key": "rise_speed", "label": "上升速度", "unit": "mm/min"},
+                {"key": "fall_speed", "label": "下降速度", "unit": "mm/min"},
+            ],
+        },
+        "F6": {
+            "name": "电动搅拌器",
+            "readings": [
+                {"key": "rotation_speed", "label": "转速", "unit": "rpm"},
+                {"key": "torque", "label": "扭矩", "unit": "N/cm"},
+                {"key": "time", "label": "时间", "unit": ""},
+            ],
+        },
+        "F7": {
+            "name": "水浴锅",
+            "readings": [
+                {"key": "temperature", "label": "温度", "unit": "°C"},
+                {"key": "time", "label": "时间", "unit": "min"},
+            ],
+        },
+        "F8": {
+            "name": "6速旋转粘度计",
+            "readings": [
+                {"key": "actual_reading", "label": "实施读数", "unit": ""},
+                {"key": "max_reading", "label": "最大读数", "unit": ""},
+                {"key": "min_reading", "label": "最小读数", "unit": ""},
+                {"key": "rotation_speed", "label": "转速", "unit": "RPM"},
+                {"key": "shear_rate", "label": "剪切速率", "unit": "S-1"},
+                {"key": "shear_stress", "label": "剪切应力", "unit": "Pa"},
+                {"key": "apparent_viscosity", "label": "表观粘度", "unit": "mPa·s"},
+                {"key": "avg_5s", "label": "5秒平均值", "unit": "mPa·s"},
+            ],
+        },
+    }
+    return {"success": True, "cameras": CAMERA_INSTRUMENTS}
 
 
 @app.delete("/experiments/{exp_id}")
@@ -342,6 +624,28 @@ def export_experiment(exp_id: int):
             cell(base + 1 + len(fit) + 1, 1, "算术平均值", bold=True)
             cell(base + 1 + len(fit) + 1, 2, round(sum(r["value"] for r in fit) / len(fit), 4))
 
+    elif exp_type == "test":
+        cell(1, 1, "测试模板拍照记录", bold=True)
+        cell(2, 1, f"实验名称: {experiment['name']}")
+        row = 4
+        cell(row, 1, "相机", bold=True)
+        cell(row, 2, "读数项", bold=True)
+        cell(row, 3, "序号", bold=True)
+        cell(row, 4, "读数值", bold=True)
+        cell(row, 5, "时间", bold=True)
+        for cam_id in range(9):
+            field_key = f"F{cam_id}"
+            cam_readings = [r for r in readings if r["camera_id"] == cam_id]
+            if cam_readings:
+                row += 1
+                cell(row, 1, field_key, bold=True)
+                for i, r in enumerate(cam_readings, start=1):
+                    cell(row + i, 2, r["field_key"])
+                    cell(row + i, 3, i)
+                    cell(row + i, 4, r["value"])
+                    cell(row + i, 5, r["timestamp"][:19])
+                row += len(cam_readings)
+
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -414,9 +718,9 @@ def get_llm_config():
     return {
         "success": True,
         "config": {
-            "provider": "ollama",
-            "model_name": Config.OLLAMA_QWEN_MODEL,
-            "base_url": Config.OLLAMA_BASE_URL,
+            "provider": "openai_compatible",
+            "model_name": Config.LMSTUDIO_MODEL,
+            "base_url": Config.LMSTUDIO_BASE_URL,
             "api_key": None,
             "temperature": Config.MODEL_TEMPERATURE,
             "max_tokens": Config.MODEL_MAX_TOKENS,
@@ -438,7 +742,7 @@ def set_llm_config(body: LLMConfigUpdate):
     """设置 LLM 模型配置并重建 provider"""
     from backend.services.llm_provider import create_provider, LLMConfig, set_global_provider
 
-    if body.provider not in ("ollama", "openai_compatible"):
+    if body.provider not in ("openai_compatible",):
         raise HTTPException(status_code=400, detail=f"不支持的 provider 类型: {body.provider}")
 
     # 如果前端传回脱敏后的 key（包含 ****），保留数据库中的原始 key
@@ -479,16 +783,16 @@ def set_llm_config(body: LLMConfigUpdate):
 
 
 @app.get("/config/llm/models")
-def list_ollama_models(base_url: Optional[str] = None):
-    """列出 Ollama 服务上的可用模型"""
+def list_llm_models(base_url: Optional[str] = None):
+    """列出 LMStudio 服务上的可用模型"""
     if base_url:
         url = base_url
     else:
         saved = get_config("llm_config", default=None)
         if isinstance(saved, dict):
-            url = saved.get("base_url", Config.OLLAMA_BASE_URL)
+            url = saved.get("base_url", Config.LMSTUDIO_BASE_URL)
         else:
-            url = Config.OLLAMA_BASE_URL
+            url = Config.LMSTUDIO_BASE_URL
     try:
         import httpx
         resp = httpx.get(f"{url}/api/tags", timeout=5.0)
@@ -502,7 +806,7 @@ def list_ollama_models(base_url: Optional[str] = None):
             ]
         }
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"无法连接 Ollama 服务: {str(e)}")
+        raise HTTPException(status_code=503, detail=f"无法连接 LMStudio 服务: {str(e)}")
 
 
 @app.get("/config/llm/status")
@@ -512,22 +816,8 @@ def check_llm_status():
         from backend.services.llm_provider import get_global_provider
         provider = get_global_provider()
         import httpx
-        if provider.provider_type == "ollama":
-            # 使用 /api/tags 轻量级检查
-            base_url = provider._base_url
-            resp = httpx.get(f"{base_url}/api/tags", timeout=5.0)
-            resp.raise_for_status()
-            # 验证模型存在
-            models = resp.json().get("models", [])
-            model_names = [m["name"] for m in models]
-            if provider.model_name not in model_names:
-                return {
-                    "success": False,
-                    "status": "error",
-                    "detail": f"模型 {provider.model_name} 未找到，可用模型: {', '.join(model_names[:5])}",
-                }
-        else:
-            # OpenAI 兼容: 使用 /v1/models 轻量级检查
+        if provider.provider_type == "openai_compatible":
+            # LMStudio / OpenAI 兼容: 使用 /v1/models 轻量级检查
             headers = {}
             if provider._api_key:
                 headers["Authorization"] = f"Bearer {provider._api_key}"
@@ -565,8 +855,8 @@ def get_system_config():
             "camera_count": Config.CAMERA_COUNT,
             "camera_control_host": Config.CAMERA_CONTROL_HOST,
             "camera_control_port_base": Config.CAMERA_CONTROL_PORT_BASE,
-            "ollama_base_url": Config.OLLAMA_BASE_URL,
-            "ollama_model": Config.OLLAMA_QWEN_MODEL
+            "lmstudio_base_url": Config.LMSTUDIO_BASE_URL,
+            "lmstudio_model": Config.LMSTUDIO_MODEL
         }
     }
 

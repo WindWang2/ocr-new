@@ -1,8 +1,9 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { ExperimentType, CameraFieldConfig, ManualParams } from '@/types'
 import { EXPERIMENT_SCHEMAS } from '@/lib/experimentTypes'
-import { ArrowLeft, Camera } from 'lucide-react'
+import { getCameraInstruments } from '@/lib/api'
+import { ArrowLeft, Camera, ChevronDown } from 'lucide-react'
 
 const CAMERA_OPTIONS = Array.from({ length: 9 }, (_, i) => i)
 
@@ -20,17 +21,67 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
     Object.fromEntries(schema.manualParams.map(p => [p.key, '']))
   )
   const [cameraConfigs, setCameraConfigs] = useState<CameraFieldConfig[]>(() =>
-    schema.cameraFields.map(f => ({ field_key: f.fieldKey, camera_id: 0, max_readings: f.maxReadings }))
+    schema.cameraFields.map(f => ({
+      field_key: f.fieldKey,
+      camera_id: f.fieldKey.startsWith('F') ? parseInt(f.fieldKey[1]) : 0,
+      max_readings: f.maxReadings,
+    }))
   )
   const [error, setError] = useState('')
 
+  // 相机仪器映射数据
+  const [instruments, setInstruments] = useState<Record<string, { name: string; readings: { key: string; label: string; unit: string }[] }>>({})
+  const [selectedReadings, setSelectedReadings] = useState<Record<number, string[]>>(() =>
+    Object.fromEntries(schema.cameraFields.map((f, i) => [i, []]))
+  )
+
+  useEffect(() => {
+    getCameraInstruments().then(data => {
+      setInstruments(data)
+      // 默认选中所有读数
+      const defaults: Record<number, string[]> = {}
+      schema.cameraFields.forEach((f, i) => {
+        const cameraId = cameraConfigs[i]?.camera_id ?? (f.fieldKey.startsWith('F') ? parseInt(f.fieldKey[1]) : 0)
+        defaults[i] = (data[`F${cameraId}`]?.readings || []).map(r => r.key)
+      })
+      setSelectedReadings(defaults)
+    }).catch(() => {})
+  }, [type])
+
   const updateCamera = (index: number, cameraId: number) => {
     setCameraConfigs(prev => prev.map((c, i) => i === index ? { ...c, camera_id: cameraId } : c))
+    // 切换相机时自动选中该相机所有读数
+    const readings = instruments[`F${cameraId}`]?.readings || []
+    setSelectedReadings(prev => ({ ...prev, [index]: readings.map(r => r.key) }))
+  }
+
+  const toggleReading = (positionIndex: number, readingKey: string) => {
+    setSelectedReadings(prev => {
+      const current = prev[positionIndex] || []
+      const next = current.includes(readingKey)
+        ? current.filter(k => k !== readingKey)
+        : [...current, readingKey]
+      return { ...prev, [positionIndex]: next }
+    })
   }
 
   const handleSubmit = async () => {
     setError('')
-    await onSubmit(manualParams, cameraConfigs).catch(e => setError(e.message))
+    const configs = cameraConfigs.map((c, i) => ({
+      ...c,
+      selected_readings: selectedReadings[i] || [],
+    }))
+    await onSubmit(manualParams, configs).catch(e => setError(e.message))
+  }
+
+  const getInstrumentName = (cameraId: number) => {
+    const key = `F${cameraId}`
+    return instruments[key]?.name || ''
+  }
+
+  const getReadings = (cameraId: number) => {
+    const key = `F${cameraId}`
+    return instruments[key]?.readings || []
   }
 
   return (
@@ -71,26 +122,58 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
           <Camera size={14} className="text-brand-500" />
           <h3 className="text-xs font-semibold text-brand-600 uppercase tracking-wider">相机绑定</h3>
         </div>
-        {schema.cameraFields.map((field, idx) => (
-          <div key={field.fieldKey} className="flex items-center gap-3 bg-white/60 rounded-lg px-3 py-2.5">
-            <div className="flex-1">
-              <div className="text-sm font-medium text-gray-700">{field.label}</div>
-              {field.unit && <div className="text-[11px] text-gray-400">{field.unit}</div>}
+        {schema.cameraFields.map((field, idx) => {
+          const cameraId = cameraConfigs[idx]?.camera_id ?? 0
+          const instrumentName = getInstrumentName(cameraId)
+          const readings = getReadings(cameraId)
+          const selected = selectedReadings[idx] || []
+          return (
+            <div key={field.fieldKey} className="bg-white/60 rounded-lg px-3 py-3 space-y-2.5">
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <div className="text-sm font-medium text-gray-700">{field.label}</div>
+                  {instrumentName && <div className="text-[11px] text-brand-500">{instrumentName}</div>}
+                </div>
+                <select
+                  value={cameraId}
+                  onChange={e => updateCamera(idx, Number(e.target.value))}
+                  disabled={type === 'test'}
+                  className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-sm disabled:opacity-50 cursor-pointer"
+                >
+                  {CAMERA_OPTIONS.map(c => (
+                    <option key={c} value={c}>
+                      F{c} {instruments[`F${c}`]?.name || ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {/* 读数选择 */}
+              {readings.length > 0 && (
+                <div className="ml-1">
+                  <div className="text-[11px] text-gray-500 mb-1.5">选择需要显示的读数：</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {readings.map(r => {
+                      const isSelected = selected.includes(r.key)
+                      return (
+                        <button
+                          key={r.key}
+                          onClick={() => toggleReading(idx, r.key)}
+                          className={`px-2 py-1 rounded text-[11px] transition border ${
+                            isSelected
+                              ? 'bg-brand-500 text-white border-brand-500'
+                              : 'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
+                          }`}
+                        >
+                          {r.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
-            <select
-              value={cameraConfigs[idx]?.camera_id ?? 0}
-              onChange={e => updateCamera(idx, Number(e.target.value))}
-              className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-sm"
-            >
-              {CAMERA_OPTIONS.map(c => (
-                <option key={c} value={c}>相机 {c}</option>
-              ))}
-            </select>
-            <span className="text-[11px] text-gray-400 w-14 shrink-0 text-right">
-              最多 {field.maxReadings} 次
-            </span>
-          </div>
-        ))}
+          )
+        })}
       </div>
 
       {error && <p className="text-sm text-red-500 bg-red-50 rounded-lg px-4 py-2">{error}</p>}

@@ -208,6 +208,9 @@ def get_experiment(exp_id: int) -> Optional[dict]:
     except json.JSONDecodeError:
         logger.warning(f"实验 {exp_id} camera_configs JSON 解析失败，使用空值")
         result["camera_configs"] = []
+    # 旧记录 type 可能为 NULL 或空字符串，回退到通用相机
+    if not result.get("type"):
+        result["type"] = "test"
     result["readings"] = get_readings_by_experiment(exp_id)
     return result
 
@@ -222,7 +225,7 @@ def list_experiments(limit: int = 50, offset: int = 0) -> List[dict]:
     )
     rows = cursor.fetchall()
     conn.close()
-    return [dict(row) for row in rows]
+    return [{**dict(row), "type": dict(row).get("type") or "test"} for row in rows]
 
 
 def delete_experiment(exp_id: int) -> bool:

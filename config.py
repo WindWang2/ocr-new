@@ -2,8 +2,8 @@
 配置文件
 支持通过环境变量覆盖默认值
 
-后端架构: Ollama 服务部署
-  多模态读取: qwen3.5:latest
+后端架构: LMStudio 服务部署（OpenAI 兼容 API）
+  多模态读取: 4b (http://127.0.0.1:1234)
 """
 
 import os
@@ -22,13 +22,14 @@ def _env(key: str, default, cast=None):
 class Config:
     """系统配置（支持环境变量覆盖）"""
 
-    # Ollama 配置
-    OLLAMA_BASE_URL = _env("OLLAMA_BASE_URL", "http://localhost:11434")
-    OLLAMA_QWEN_MODEL = _env("OLLAMA_QWEN_MODEL", "qwen3.5:latest")
+    # LMStudio 配置（OpenAI 兼容 API）
+    LMSTUDIO_BASE_URL = _env("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234")
+    LMSTUDIO_MODEL = _env("LMSTUDIO_MODEL", "4b")
+    DEFAULT_LLM_PROVIDER = _env("DEFAULT_LLM_PROVIDER", "openai_compatible")
 
     # 模型推理参数
     MODEL_TEMPERATURE = _env("MODEL_TEMPERATURE", 0.1, float)
-    MODEL_MAX_TOKENS = _env("MODEL_MAX_TOKENS", 500, int)
+    MODEL_MAX_TOKENS = _env("MODEL_MAX_TOKENS", 2000, int)
 
     # 图片格式
     IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp', '.JPG', '.JPEG', '.PNG', '.BMP']
@@ -60,14 +61,6 @@ class Config:
 
     # 触发指令格式
     TRIGGER_COMMAND_PREFIX = _env("TRIGGER_COMMAND_PREFIX", "XXXX")
-
-    @classmethod
-    def get_ollama_config(cls):
-        """获取 Ollama 配置"""
-        return {
-            "base_url": cls.OLLAMA_BASE_URL,
-            "qwen_model": cls.OLLAMA_QWEN_MODEL,
-        }
 
     @classmethod
     def get_camera_config(cls):

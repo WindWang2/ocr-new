@@ -2,11 +2,13 @@ export type ExperimentType =
   | 'kinematic_viscosity'
   | 'apparent_viscosity'
   | 'surface_tension'
+  | 'test'
 
 export interface CameraFieldConfig {
   field_key: string
   camera_id: number
   max_readings: number
+  selected_readings?: string[]
 }
 
 export interface ManualParams {
@@ -43,11 +45,11 @@ export interface ExperimentSummary {
 
 export interface ExperimentViewProps {
   experiment: Experiment
-  onCapture: (fieldKey: string, cameraId: number) => Promise<Reading>
+  onCapture: (fieldKey: string, cameraId: number) => Promise<Reading | Reading[]>
   capturing: string | null
 }
 
-export type LLMProviderType = 'ollama' | 'openai_compatible'
+export type LLMProviderType = 'openai_compatible'
 
 export interface LLMConfig {
   provider: LLMProviderType
@@ -58,7 +60,7 @@ export interface LLMConfig {
   max_tokens: number
 }
 
-export interface OllamaModel {
+export interface LLMModel {
   name: string
   size: number
   modified_at: string

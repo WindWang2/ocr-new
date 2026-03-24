@@ -29,14 +29,24 @@ class MockCameraClient:
             self.image_dir = PROJECT_ROOT / "camera_images" / f"F{camera_id}"
 
     def _find_latest_image(self) -> Path | None:
-        """返回图片目录中修改时间最新的图片，找不到返回 None"""
+        """返回图片目录中（含子目录）修改时间最新的图片，找不到返回 None"""
         if not self.image_dir.exists():
             return None
         extensions = {".jpg", ".jpeg", ".png", ".bmp"}
-        images = [p for p in self.image_dir.iterdir() if p.suffix.lower() in extensions]
+        images = [p for p in self.image_dir.rglob("*") if p.is_file() and p.suffix.lower() in extensions]
         if not images:
             return None
         return max(images, key=lambda p: p.stat().st_mtime)
+
+    def capture_image(self) -> Tuple[bool, dict]:
+        """只获取图片，不做OCR，返回图片路径"""
+        image_path = self._find_latest_image()
+        if image_path is None:
+            msg = f"[Mock 相机{self.camera_id}] 目录 {self.image_dir} 中未找到图片"
+            logger.error(msg)
+            return False, {"camera_id": self.camera_id, "error": msg}
+        logger.info(f"[Mock 相机{self.camera_id}] 获取图片: {image_path}")
+        return True, {"camera_id": self.camera_id, "image_path": str(image_path)}
 
     def trigger_and_read(self) -> Tuple[bool, dict]:
         """

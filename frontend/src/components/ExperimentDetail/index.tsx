@@ -5,6 +5,7 @@ import { exportUrl } from '@/lib/api'
 import KinematicViscosity from '@/components/experiments/KinematicViscosity'
 import ApparentViscosity from '@/components/experiments/ApparentViscosity'
 import SurfaceTension from '@/components/experiments/SurfaceTension'
+import TestTemplate from '@/components/experiments/TestTemplate'
 import { Download } from 'lucide-react'
 import React from 'react'
 
@@ -12,11 +13,12 @@ const EXPERIMENT_VIEWS: Record<ExperimentType, React.ComponentType<ExperimentVie
   kinematic_viscosity: KinematicViscosity,
   apparent_viscosity: ApparentViscosity,
   surface_tension: SurfaceTension,
+  test: TestTemplate,
 }
 
 interface Props {
   experiment: Experiment
-  onCapture: (fieldKey: string, cameraId: number) => Promise<Reading>
+  onCapture: (fieldKey: string, cameraId: number) => Promise<Reading | Reading[]>
   capturing: string | null
 }
 

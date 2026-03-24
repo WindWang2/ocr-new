@@ -71,16 +71,24 @@ export default function ReadingField({
           {readings.map((r, i) => (
             <div
               key={r.id}
-              className="flex justify-between items-center text-sm bg-gray-50/80 rounded-lg px-3.5 py-2 border border-gray-50"
+              className="flex items-center gap-2.5 text-sm bg-gray-50/80 rounded-lg px-3.5 py-2 border border-gray-50"
             >
-              <span className="text-gray-400 text-xs font-medium w-10">#{i + 1}</span>
+              {r.image_path && (
+                <img
+                  src={`/images/${r.image_path}`}
+                  alt={`#${i + 1}`}
+                  className="w-16 h-12 object-cover rounded border border-gray-200 shrink-0 bg-gray-100"
+                  loading="lazy"
+                />
+              )}
+              <span className="text-gray-400 text-xs font-medium w-8 shrink-0">#{i + 1}</span>
               <span className="font-semibold text-gray-800 flex-1 text-center">{r.value} {unit}</span>
               {r.confidence != null && (
-                <span className="text-[11px] text-gray-400 w-16 text-right">
+                <span className="text-[11px] text-gray-400 w-16 text-right shrink-0">
                   {(r.confidence * 100).toFixed(1)}%
                 </span>
               )}
-              <span className="text-[11px] text-gray-300 w-16 text-right">
+              <span className="text-[11px] text-gray-300 w-16 text-right shrink-0">
                 {new Date(r.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
               </span>
             </div>
