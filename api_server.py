@@ -93,23 +93,23 @@ async def health():
 async def capture_photo(req: CaptureRequest):
     """触发指定相机拍照并返回读数"""
     try:
-        # 调用 TCP 服务
+        # 调用 TCP 服务（所有相机共用同一端口，通过 VTFP,X 区分）
         host = Config.CAMERA_CONFIG["control_host"]
-        port = Config.CAMERA_CONFIG["control_port_base"] + req.camera_id
-        
+        port = Config.CAMERA_CONFIG["control_port"]
+
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(10)
         sock.connect((host, port))
-        sock.sendall(f"{Config.CAMERA_CONFIG['trigger_prefix']},{req.camera_id}".encode())
+        sock.sendall(f"{Config.CAMERA_CONFIG['trigger_prefix']},{req.camera_id}\r\n".encode())
         response = sock.recv(1024).decode().strip()
         sock.close()
-        
-        if "OK" not in response.upper():
+
+        if response != "VTFP,0":
             raise HTTPException(500, f"相机响应错误: {response}")
         
         # 等待图片生成并读取
         await asyncio.sleep(1)
-        image_dir = Path(Config.CAMERA_CONFIG["image_dir"]) / f"camera_{req.camera_id}"
+        image_dir = Path(Config.CAMERA_CONFIG["image_dir"]) / f"F{req.camera_id}"
         images = sorted(image_dir.glob("*.jpg"), key=lambda x: x.stat().st_mtime, reverse=True)
         
         if not images:

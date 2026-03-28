@@ -45,8 +45,8 @@ class CameraController:
         self.camera_id = camera_id
         self.config = config
         self.control_host = config["control_host"]
-        self.control_port = config["control_port_base"] + camera_id
-        self.image_dir = Path(config["image_dir"]) / f"camera_{camera_id}"
+        self.control_port = config["control_port"]
+        self.image_dir = Path(config["image_dir"]) / f"F{camera_id}"
         self.capture_command = config["capture_command"]
         self.capture_timeout = config["capture_timeout"]
         self.file_wait_timeout = config["file_wait_timeout"]
@@ -69,10 +69,10 @@ class CameraController:
             logger.info(f"[相机{self.camera_id}] 连接 {self.control_host}:{self.control_port}")
             sock.connect((self.control_host, self.control_port))
 
-            # 发送拍照指令
-            command = f"{self.config['trigger_prefix']},{self.camera_id}"
+            # 发送拍照指令 VTFP,X\r\n
+            command = f"{self.config['trigger_prefix']},{self.camera_id}\r\n"
             sock.sendall(command.encode('utf-8'))
-            logger.info(f"[相机{self.camera_id}] 发送指令: {command}")
+            logger.info(f"[相机{self.camera_id}] 发送指令: {command.strip()}")
 
             # 等待响应
             response = sock.recv(1024).decode('utf-8').strip()
@@ -80,7 +80,8 @@ class CameraController:
 
             logger.info(f"[相机{self.camera_id}] 收到响应: {response}")
 
-            if "OK" in response or "SUCCESS" in response.upper():
+            # 成功响应为 VTFP,0
+            if response == "VTFP,0":
                 return True, response
             else:
                 return False, f"相机返回错误: {response}"
@@ -96,6 +97,9 @@ class CameraController:
         """
         获取最新拍摄的图片
 
+        目录结构: F{camera_id}/YYYYMMDD/YYYYMMDDHHMMSSMM_F{id}-I0_OK.bmp
+        在今天的日期子目录中查找最新的 BMP 图片。
+
         Args:
             before_time: 拍照前的时间戳，用于筛选新文件
 
@@ -106,29 +110,43 @@ class CameraController:
             logger.warning(f"[相机{self.camera_id}] 图片目录不存在: {self.image_dir}")
             return None
 
-        # 查找所有图片文件
+        # 优先在今天的日期目录中查找
+        today_dir = self.image_dir / datetime.now().strftime("%Y%m%d")
+        search_dirs = []
+        if today_dir.exists():
+            search_dirs.append(today_dir)
+
+        # 如果今天目录没有，则查找所有日期子目录
+        if not search_dirs:
+            date_dirs = sorted(
+                [d for d in self.image_dir.iterdir() if d.is_dir()],
+                key=lambda d: d.name, reverse=True
+            )
+            search_dirs = date_dirs[:1]  # 取最新的日期目录
+
+        if not search_dirs:
+            # 兜底：直接在 image_dir 下查找
+            search_dirs = [self.image_dir]
+
+        # 在目标目录中查找图片
         image_files = []
-        for ext in Config.IMAGE_EXTENSIONS:
-            image_files.extend(self.image_dir.glob(f"*{ext}"))
-            image_files.extend(self.image_dir.glob(f"*{ext.upper()}"))
+        for search_dir in search_dirs:
+            for ext in Config.IMAGE_EXTENSIONS:
+                image_files.extend(search_dir.glob(f"*{ext}"))
+                image_files.extend(search_dir.glob(f"*{ext.upper()}"))
 
         if not image_files:
             return None
 
-        # 按修改时间排序，获取最新的
+        # 按文件名排序（文件名包含时间戳），取最新的
         if before_time:
-            # 筛选拍照后新增的文件
             new_files = [f for f in image_files if f.stat().st_mtime > before_time]
             if new_files:
-                new_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+                new_files.sort(key=lambda x: x.name, reverse=True)
                 return new_files[0]
-            else:
-                # 没有新文件，返回最新的
-                image_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-                return image_files[0]
-        else:
-            image_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-            return image_files[0]
+
+        image_files.sort(key=lambda x: x.name, reverse=True)
+        return image_files[0]
 
     def wait_for_new_image(self, timeout: float = None, interval: float = None) -> Optional[Path]:
         """
@@ -145,30 +163,26 @@ class CameraController:
         interval = interval or self.file_check_interval
 
         start_time = time.time()
-        initial_files = set()
 
-        # 获取初始文件列表
-        if self.image_dir.exists():
-            for ext in Config.IMAGE_EXTENSIONS:
-                initial_files.update(self.image_dir.glob(f"*{ext}"))
-                initial_files.update(self.image_dir.glob(f"*{ext.upper()}"))
+        # 今天的日期目录
+        today_dir = self.image_dir / datetime.now().strftime("%Y%m%d")
+
+        def _scan_files():
+            files = set()
+            for search_dir in [today_dir, self.image_dir]:
+                if search_dir.exists():
+                    for ext in Config.IMAGE_EXTENSIONS:
+                        files.update(search_dir.glob(f"*{ext}"))
+                        files.update(search_dir.glob(f"*{ext.upper()}"))
+            return files
+
+        initial_files = _scan_files()
 
         while time.time() - start_time < timeout:
-            if not self.image_dir.exists():
-                time.sleep(interval)
-                continue
-
-            # 获取当前文件列表
-            current_files = set()
-            for ext in Config.IMAGE_EXTENSIONS:
-                current_files.update(self.image_dir.glob(f"*{ext}"))
-                current_files.update(self.image_dir.glob(f"*{ext.upper()}"))
-
-            # 查找新增文件
+            current_files = _scan_files()
             new_files = current_files - initial_files
             if new_files:
-                # 返回最新的新文件
-                new_file = max(new_files, key=lambda x: x.stat().st_mtime)
+                new_file = max(new_files, key=lambda x: x.name)
                 logger.info(f"[相机{self.camera_id}] 检测到新图片: {new_file.name}")
                 return new_file
 

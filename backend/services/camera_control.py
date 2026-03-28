@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 from typing import List, Tuple, Optional
 from datetime import datetime
+from PIL import Image
 
 from backend.models.database import get_camera_by_id, get_cameras
 
@@ -27,12 +28,12 @@ class CameraClient:
         self.camera_id = camera_id
         self.config = config or self._default_config()
         self.control_host = self.config["control_host"]
-        self.control_port = self.config["control_port_base"] + camera_id
+        self.control_port = self.config["control_port"]
         self.capture_timeout = self.config.get("capture_timeout", 10.0)
-        self.trigger_prefix = self.config.get("trigger_prefix", "XXXX")
-        
-        # 图片目录
-        self.image_dir = Path(self.config.get("image_dir", "camera_images")) / f"camera_{camera_id}"
+        self.trigger_prefix = self.config.get("trigger_prefix", "VTFP")
+
+        # 图片目录: F{camera_id}/YYYYMMDD/
+        self.image_dir = Path(self.config.get("image_dir", "camera_images")) / f"F{camera_id}"
     
     def _default_config(self):
         """默认配置"""
@@ -52,29 +53,34 @@ class CameraClient:
             
             logger.info(f"[相机{self.camera_id}] 连接 {self.control_host}:{self.control_port}")
             sock.connect((self.control_host, self.control_port))
-            
-            # 2. 发送拍照指令
-            command = f"{self.trigger_prefix},{self.camera_id}"
+
+            # 2. 发送拍照指令 VTFP,X\r\n
+            command = f"{self.trigger_prefix},{self.camera_id}\r\n"
             sock.sendall(command.encode('utf-8'))
-            logger.info(f"[相机{self.camera_id}] 发送指令: {command}")
-            
+            logger.info(f"[相机{self.camera_id}] 发送指令: {command.strip()}")
+
             # 3. 等待响应
             response = sock.recv(4096).decode('utf-8').strip()
             sock.close()
-            
+
             logger.info(f"[相机{self.camera_id}] 响应: {response}")
-            
-            # 4. 解析响应（JSON或纯文本）
-            try:
-                result = json.loads(response)
-            except json.JSONDecodeError:
-                result = {"raw": response, "reading": response}
-            
-            # 5. 返回成功结果
+
+            # 4. 检查拍照是否成功（VTFP,0 表示成功）
+            if response != "VTFP,0":
+                return False, {"camera_id": self.camera_id, "error": f"相机返回错误: {response}", "success": False}
+
+            # 5. 在 F{id}/YYYYMMDD/ 目录中查找最新的 BMP 图片并转换为 JPG
+            image_path = self._find_latest_image()
+            if not image_path:
+                return False, {"camera_id": self.camera_id, "error": "拍照成功但未找到图片文件", "success": False}
+
+            # 转换 BMP -> JPG（缩小）
+            jpg_path = self._convert_bmp_to_jpg(image_path)
+
             return True, {
                 "camera_id": self.camera_id,
                 "raw_response": response,
-                "reading": result.get("reading") or result.get("value") or result.get("raw"),
+                "image_path": str(jpg_path),
                 "timestamp": datetime.now().isoformat(),
                 "success": True
             }
@@ -89,6 +95,61 @@ class CameraClient:
             logger.error(f"[相机{self.camera_id}] 异常: {str(e)}")
             return False, {"camera_id": self.camera_id, "error": str(e), "success": False}
     
+    def _find_latest_image(self) -> Optional[Path]:
+        """在 F{id}/YYYYMMDD/ 目录中查找最新的图片（优先今天目录）"""
+        if not self.image_dir.exists():
+            return None
+
+        # 优先在今天的日期目录中查找
+        today_dir = self.image_dir / datetime.now().strftime("%Y%m%d")
+        search_dirs = []
+        if today_dir.exists():
+            search_dirs.append(today_dir)
+
+        # 兜底：取最新日期目录
+        if not search_dirs:
+            date_dirs = sorted(
+                [d for d in self.image_dir.iterdir() if d.is_dir()],
+                key=lambda d: d.name, reverse=True
+            )
+            if date_dirs:
+                search_dirs.append(date_dirs[0])
+
+        if not search_dirs:
+            search_dirs = [self.image_dir]
+
+        extensions = {".jpg", ".jpeg", ".png", ".bmp"}
+        image_files = []
+        for d in search_dirs:
+            image_files.extend(
+                p for p in d.iterdir()
+                if p.is_file() and p.suffix.lower() in extensions
+            )
+
+        if not image_files:
+            return None
+
+        # 按文件名降序（文件名含时间戳），取最新
+        return max(image_files, key=lambda p: p.name)
+
+    def _convert_bmp_to_jpg(self, src: Path, max_size: int = 500) -> Path:
+        """将 BMP 转换为 JPG 并缩小，返回 JPG 路径"""
+        jpg_path = src.with_suffix(".jpg")
+
+        try:
+            img = Image.open(src).convert("RGB")
+            w, h = img.size
+            if max(w, h) > max_size:
+                scale = max_size / max(w, h)
+                img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            img.save(str(jpg_path), "JPEG", quality=85)
+            logger.info(f"[相机{self.camera_id}] BMP->JPG: {src.name} -> {jpg_path.name} ({img.size[0]}x{img.size[1]})")
+        except Exception as e:
+            logger.warning(f"[相机{self.camera_id}] 图片转换失败: {e}，使用原图")
+            return src
+
+        return jpg_path
+
     def get_reading_only(self) -> Tuple[bool, dict]:
         """仅读取当前读数（不触发拍照）"""
         return self.trigger_and_read()

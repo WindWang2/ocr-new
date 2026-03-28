@@ -1,11 +1,12 @@
 # 仪器读数识别系统
 
-使用 Ollama 本地部署 Qwen3.5 多模态模型进行仪器读数识别
+使用 LMStudio 本地部署 Qwen3.5 多模态模型进行仪器读数识别
 
 ## 系统架构
 
-使用 Ollama 本地多模态模型：
-- `qwen3.5:latest`：多模态读取
+使用 LMStudio（OpenAI 兼容 API）本地多模态模型：
+- `4b`：多模态读取（默认）
+- `2b`：多模态读取（可选）
 
 ---
 
@@ -14,28 +15,20 @@
 ### 前置条件
 
 - Python 3.8+
-- Ollama 已安装（https://ollama.com/）
+- LMStudio 已安装（https://lmstudio.ai/）
 
 ### 第一步：环境检查
 
-如果 Ollama 服务已经运行且模型已经拉取，可直接跳过本步骤。
+如果 LMStudio 服务已经运行且模型已经加载，可直接跳过本步骤。
 
 #### 安装 Python 客户端（如果未安装）
 ```bash
 pip install -r requirements.txt
 ```
 
-#### 拉取模型（如果未拉取）
-```bash
-ollama pull qwen3.5:latest
-```
-
 ### 第二步：启动模型服务（如果未启动）
 
-Ollama 服务默认会自动运行，如需手动启动模型：
-```bash
-ollama run qwen3.5:latest
-```
+在 LMStudio 中加载多模态模型，启动本地服务器（默认端口 1234）。
 
 等待模型加载完成后再继续。
 
@@ -148,14 +141,14 @@ python read_instrument.py image.jpg --no-visual
 
 所有参数均可通过环境变量覆盖：
 
-### Ollama 配置
+### LMStudio 配置
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama 服务器地址 |
-| `OLLAMA_QWEN_MODEL` | `qwen3.5:latest` | Qwen 多模态模型名称 |
+| `LMSTUDIO_BASE_URL` | `http://127.0.0.1:1234` | LMStudio 服务器地址 |
+| `LMSTUDIO_MODEL` | `4b` | 多模态模型名称 |
 | `MODEL_TEMPERATURE` | `0.1` | 生成温度 |
-| `MODEL_MAX_TOKENS` | `500` | 最大 token 数 |
+| `MODEL_MAX_TOKENS` | `2000` | 最大 token 数 |
 
 ### 相机服务配置
 

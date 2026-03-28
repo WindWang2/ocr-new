@@ -46,8 +46,8 @@ class Config:
 
     # 相机TCP控制（向相机发送拍照指令）
     CAMERA_CONTROL_HOST = _env("CAMERA_CONTROL_HOST", "127.0.0.1")
-    CAMERA_CONTROL_PORT_BASE = _env("CAMERA_CONTROL_PORT_BASE", 9000, int)  # 相机端口基址
-    CAMERA_CAPTURE_COMMAND = _env("CAMERA_CAPTURE_COMMAND", "CAPTURE")  # 拍照指令
+    CAMERA_CONTROL_PORT = _env("CAMERA_CONTROL_PORT", 10401, int)  # 所有相机共用同一端口
+    CAMERA_CAPTURE_COMMAND = _env("CAMERA_CAPTURE_COMMAND", "VTFP")  # 拍照指令
     CAMERA_CAPTURE_TIMEOUT = _env("CAMERA_CAPTURE_TIMEOUT", 10.0, float)  # 拍照超时
 
     # 拍照完成等待配置
@@ -60,7 +60,7 @@ class Config:
     IMAGE_MAX_SIZE = _env("IMAGE_MAX_SIZE", 500, int)  # 最长边像素数
 
     # 触发指令格式
-    TRIGGER_COMMAND_PREFIX = _env("TRIGGER_COMMAND_PREFIX", "XXXX")
+    TRIGGER_COMMAND_PREFIX = _env("TRIGGER_COMMAND_PREFIX", "VTFP")
 
     @classmethod
     def get_camera_config(cls):
@@ -71,7 +71,7 @@ class Config:
             "camera_count": cls.CAMERA_COUNT,
             "image_dir": cls.CAMERA_IMAGE_DIR,
             "control_host": cls.CAMERA_CONTROL_HOST,
-            "control_port_base": cls.CAMERA_CONTROL_PORT_BASE,
+            "control_port": cls.CAMERA_CONTROL_PORT,
             "capture_command": cls.CAMERA_CAPTURE_COMMAND,
             "capture_timeout": cls.CAMERA_CAPTURE_TIMEOUT,
             "wait_for_file": cls.CAMERA_WAIT_FOR_FILE,

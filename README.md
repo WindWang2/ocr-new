@@ -5,8 +5,8 @@
 ## 功能特性
 
 - **多仪表类型识别** — 支持运动粘度计、旋转粘度计、表面张力仪等 17 种实验室仪器
-- **多模态 OCR** — 通过 Ollama 或 OpenAI 兼容 API 调用视觉语言模型进行仪表读数识别
-- **LLM 模型切换** — 前端下拉菜单实时切换模型，支持本地 Ollama 和远程 OpenAI 兼容服务
+- **多模态 OCR** — 通过 LMStudio（OpenAI 兼容 API）调用视觉语言模型进行仪表读数识别
+- **LLM 模型切换** — 前端下拉菜单实时切换模型，支持本地 LMStudio 和远程 OpenAI 兼容服务
 - **实验管理** — 三种实验类型（运动粘度、表观粘度、表面/界面张力），支持创建、执行、导出 Excel
 - **Mock 相机模式** — 读取本地图片进行 OCR 测试，无需连接真实相机
 - **连接状态指示** — Settings 按钮实时显示 LLM 服务连接状态
@@ -18,7 +18,7 @@
 │   ├── api/main.py              # FastAPI 后端服务 (端口 8001)
 │   ├── models/database.py       # SQLite 数据模型
 │   └── services/
-│       ├── llm_provider.py      # LLM 抽象层 (Ollama / OpenAI 兼容)
+│       ├── llm_provider.py      # LLM 抽象层 (OpenAI 兼容)
 │       ├── camera_control.py    # 真实相机 TCP 客户端
 │       └── mock_camera.py       # Mock 相机 (本地图片 OCR)
 ├── frontend/                    # Next.js 14 前端
@@ -49,11 +49,9 @@ pip install -r requirements.txt
 cd frontend && npm install
 ```
 
-### 2. 启动 Ollama 并拉取模型
+### 2. 启动 LMStudio 并加载模型
 
-```bash
-ollama pull qwen3.5:latest
-```
+在 LMStudio 中加载 Qwen3.5 多模态模型，启动本地服务器。
 
 ### 3. 启动服务
 
@@ -73,8 +71,7 @@ ollama pull qwen3.5:latest
 
 | 模式 | 说明 | 配置项 |
 |------|------|--------|
-| **Ollama** | 本地或远程 Ollama 服务 | 服务地址、模型选择（支持自动检测列表） |
-| **OpenAI 兼容** | vLLM、LM Studio、OpenRouter 等 | 服务地址、模型名称、API Key |
+| **LMStudio** | 本地 LMStudio 服务 | 服务地址、模型选择（支持自动检测列表） |
 
 配置会持久化到数据库，重启后自动恢复。
 
@@ -84,7 +81,7 @@ ollama pull qwen3.5:latest
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama 服务地址 |
-| `OLLAMA_QWEN_MODEL` | `qwen3.5:latest` | 默认模型名称 |
+| `LMSTUDIO_BASE_URL` | `http://127.0.0.1:1234` | LMStudio 服务地址 |
+| `LMSTUDIO_MODEL` | `4b` | 默认模型名称 |
 | `MODEL_TEMPERATURE` | `0.1` | 模型温度 |
 | `MODEL_MAX_TOKENS` | `500` | 最大输出 token 数 |

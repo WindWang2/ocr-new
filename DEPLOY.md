@@ -44,7 +44,7 @@ npm install
 ## 配置修改
 编辑 `config.py` 修改相关配置：
 - 相机控制端口
-- OLLAMA 模型地址
+- LMStudio 模型地址
 - 存储路径等
 
 ## 测试验证

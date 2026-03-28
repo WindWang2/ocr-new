@@ -854,7 +854,7 @@ def get_system_config():
         "config": {
             "camera_count": Config.CAMERA_COUNT,
             "camera_control_host": Config.CAMERA_CONTROL_HOST,
-            "camera_control_port_base": Config.CAMERA_CONTROL_PORT_BASE,
+            "camera_control_port": Config.CAMERA_CONTROL_PORT,
             "lmstudio_base_url": Config.LMSTUDIO_BASE_URL,
             "lmstudio_model": Config.LMSTUDIO_MODEL
         }

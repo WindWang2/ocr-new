@@ -12,3 +12,5 @@ node_modules/
 data/
 .env.local
 logs/
+camera_images/
+demo/origin/
