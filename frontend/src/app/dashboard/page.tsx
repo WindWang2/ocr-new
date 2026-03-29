@@ -1,8 +1,8 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { Experiment, ExperimentSummary, ExperimentType, Reading, CameraFieldConfig, ManualParams, LLMStatus } from '@/types'
-import { listExperiments, getExperiment, createExperiment, deleteExperiment, captureReading, runTestCapture, getMockConfig, setMockConfig, checkLLMStatus, getImageDir, setImageDir } from '@/lib/api'
+import { Experiment, ExperimentSummary, ExperimentType, CameraFieldConfig, ManualParams, LLMStatus } from '@/types'
+import { listExperiments, getExperiment, createExperiment, deleteExperiment, getMockConfig, setMockConfig, checkLLMStatus, getImageDir, setImageDir } from '@/lib/api'
 import ExperimentList from '@/components/ExperimentList'
 import Step1TypeSelector from '@/components/CreateExperiment/Step1TypeSelector'
 import Step2Config from '@/components/CreateExperiment/Step2Config'
@@ -23,7 +23,6 @@ export default function Dashboard() {
   const [draftName, setDraftName] = useState('')
   const [draftType, setDraftType] = useState<ExperimentType | null>(null)
 
-  const [capturing, setCapturing] = useState<string | null>(null)
 
   const [mockEnabled, setMockEnabled] = useState(false)
   const [imageDir, setImageDirState] = useState('')
@@ -96,28 +95,11 @@ export default function Dashboard() {
     }
   }
 
-  const handleCapture = async (fieldKey: string, cameraId: number): Promise<Reading | Reading[]> => {
-    if (!selectedExperiment) throw new Error('无当前实验')
-    setCapturing(fieldKey)
-    try {
-      if (selectedExperiment.type === 'test') {
-        // TestTemplate 自行调用 captureImage + runTestCapture，这里只负责刷新实验数据
-        const updated = await getExperiment(selectedExperiment.id)
-        const newReadings = updated.readings.filter(
-          r => !selectedExperiment.readings.some(er => er.id === r.id)
-        )
-        setSelectedExperiment(updated)
-        return newReadings
-      } else {
-        const reading = await captureReading(selectedExperiment.id, fieldKey, cameraId)
-        setSelectedExperiment(prev =>
-          prev ? { ...prev, readings: [...prev.readings, reading] } : prev
-        )
-        return reading
-      }
-    } finally {
-      setCapturing(null)
-    }
+  // 各实验组件拍照完成后调用，刷新实验数据
+  const handleRefresh = async () => {
+    if (!selectedExperiment) return
+    const updated = await getExperiment(selectedExperiment.id)
+    setSelectedExperiment(updated)
   }
 
   const renderMain = () => {
@@ -149,8 +131,7 @@ export default function Dashboard() {
       return (
         <ExperimentDetail
           experiment={selectedExperiment}
-          onCapture={handleCapture}
-          capturing={capturing}
+          onRefresh={handleRefresh}
         />
       )
     }

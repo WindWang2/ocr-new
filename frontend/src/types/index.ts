@@ -45,8 +45,7 @@ export interface ExperimentSummary {
 
 export interface ExperimentViewProps {
   experiment: Experiment
-  onCapture: (fieldKey: string, cameraId: number) => Promise<Reading | Reading[]>
-  capturing: string | null
+  onRefresh: () => Promise<void>  // 拍照完成后刷新实验数据
 }
 
 export type LLMProviderType = 'openai_compatible'

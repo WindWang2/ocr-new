@@ -1,5 +1,5 @@
 'use client'
-import { Experiment, ExperimentType, Reading, ExperimentViewProps } from '@/types'
+import { Experiment, ExperimentType, ExperimentViewProps } from '@/types'
 import { EXPERIMENT_SCHEMAS } from '@/lib/experimentTypes'
 import { exportUrl } from '@/lib/api'
 import KinematicViscosity from '@/components/experiments/KinematicViscosity'
@@ -18,11 +18,10 @@ const EXPERIMENT_VIEWS: Record<ExperimentType, React.ComponentType<ExperimentVie
 
 interface Props {
   experiment: Experiment
-  onCapture: (fieldKey: string, cameraId: number) => Promise<Reading | Reading[]>
-  capturing: string | null
+  onRefresh: () => Promise<void>
 }
 
-export default function ExperimentDetail({ experiment, onCapture, capturing }: Props) {
+export default function ExperimentDetail({ experiment, onRefresh }: Props) {
   const schema = EXPERIMENT_SCHEMAS[experiment.type]
   const ViewComponent = EXPERIMENT_VIEWS[experiment.type]
 
@@ -67,8 +66,7 @@ export default function ExperimentDetail({ experiment, onCapture, capturing }: P
       <div className="p-6">
         <ViewComponent
           experiment={experiment}
-          onCapture={onCapture}
-          capturing={capturing}
+          onRefresh={onRefresh}
         />
       </div>
     </div>

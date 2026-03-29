@@ -5,85 +5,175 @@ export interface ManualParamDef {
   label: string
   unit: string
   type: 'number' | 'text'
+  placeholder?: string
 }
 
 export interface CameraFieldDef {
   fieldKey: string
-  label: string
-  unit: string
-  maxReadings: number
+  label: string          // 字段显示名
+  unit: string           // 读数单位
+  maxReadings: number    // 最多读数次数（每次读数对应一个拍照槽位）
+  defaultCameraId: number // 预绑定相机（可在创建时修改）
+  description?: string   // 字段说明，用于UI提示
 }
 
 export interface ExperimentSchema {
   type: ExperimentType
   label: string
   description: string
-  icon: string          // lucide-react 图标名或 emoji 占位
+  icon: string
+  standard?: string      // 执行标准
   manualParams: ManualParamDef[]
   cameraFields: CameraFieldDef[]
 }
 
 export const EXPERIMENT_SCHEMAS: Record<ExperimentType, ExperimentSchema> = {
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 运动粘度
+  // 执行标准：品氏毛细管粘度计法，25℃下恒温10min，测4次流经时间，取平均值
+  // 公式：ν = C × τ̄ （ν：运动粘度 mm²/s；C：毛细管系数 mm²/s²；τ̄：平均流经时间 s）
+  // ─────────────────────────────────────────────────────────────────────────
   kinematic_viscosity: {
     type: 'kinematic_viscosity',
     label: '运动粘度',
-    description: '品氏毛细管粘度计，测量液体流经时间，计算运动粘度 ν',
+    description: '品氏毛细管粘度计，25℃恒温测量液体流经时间，计算运动粘度 ν = C × τ̄',
     icon: '🧪',
+    standard: 'GB/T 265',
     manualParams: [
-      { key: 'temperature_set', label: '温度设置', unit: '℃', type: 'number' },
-      { key: 'temperature_max', label: '最高温度', unit: '℃', type: 'number' },
-      { key: 'temperature_min', label: '最低温度', unit: '℃', type: 'number' },
-      { key: 'capillary_coeff', label: '毛细管系数 C', unit: 'mm²/s²', type: 'number' },
+      { key: 'temperature_set',  label: '温控设置温度', unit: '℃',      type: 'number', placeholder: '25' },
+      { key: 'temperature_max',  label: '最高温度',     unit: '℃',      type: 'number' },
+      { key: 'temperature_min',  label: '最低温度',     unit: '℃',      type: 'number' },
+      { key: 'capillary_model',  label: '毛细管粘度计型号', unit: '',    type: 'text',   placeholder: '如 0.8mm 品氏' },
+      { key: 'capillary_coeff',  label: '毛细管系数 C', unit: 'mm²/s²', type: 'number' },
     ],
     cameraFields: [
-      { fieldKey: 'flow_time', label: '流经时间 t', unit: 's', maxReadings: 4 },
+      {
+        fieldKey: 'flow_time',
+        label: '流经时间 t',
+        unit: 's',
+        maxReadings: 4,
+        defaultCameraId: 7,
+        description: '每次读数拍摄运动粘度测试仪显示的流经时间，共4次，误差 < 10s',
+      },
     ],
   },
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 表观黏度
+  // 执行标准：WLD/CNAS-QP7080004 A/3
+  // 仪器：F8（6速旋转粘度计），每次实验需分别读取 3rpm、6rpm、100rpm 共3次读数
+  // 公式：η = α × 5.077 / 1.704（α 为 100rpm 读数；η 单位 mPa·s）
+  // 需做2次实验取平均
+  // ─────────────────────────────────────────────────────────────────────────
   apparent_viscosity: {
     type: 'apparent_viscosity',
     label: '表观黏度',
-    description: '旋转粘度计，三种转速读数，计算表观黏度 η',
+    description: '6速旋转粘度计，分别读取3/6/100rpm读数，计算表观黏度 η = α × 5.077/1.704，做2次实验取平均',
     icon: '🔄',
+    standard: 'WLD/CNAS-QP7080004',
     manualParams: [],
     cameraFields: [
-      { fieldKey: 'rpm3', label: '3rpm 读数', unit: '', maxReadings: 2 },
-      { fieldKey: 'rpm6', label: '6rpm 读数', unit: '', maxReadings: 2 },
-      { fieldKey: 'rpm100', label: '100rpm 读数 (α)', unit: '', maxReadings: 2 },
+      // 每个字段最多2次读数对应实验1、实验2；全部绑定 F8（6速旋转粘度计）
+      {
+        fieldKey: 'rpm3',
+        label: '3 rpm 读数',
+        unit: '',
+        maxReadings: 2,
+        defaultCameraId: 8,
+        description: '将粘度计设置为 3rpm，拍摄屏幕读数',
+      },
+      {
+        fieldKey: 'rpm6',
+        label: '6 rpm 读数',
+        unit: '',
+        maxReadings: 2,
+        defaultCameraId: 8,
+        description: '将粘度计设置为 6rpm，拍摄屏幕读数',
+      },
+      {
+        fieldKey: 'rpm100',
+        label: '100 rpm 读数 (α)',
+        unit: '',
+        maxReadings: 2,
+        defaultCameraId: 8,
+        description: '将粘度计设置为 100rpm，拍摄屏幕读数，此值用于计算表观黏度',
+      },
     ],
   },
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 表面张力和界面张力
+  // 执行标准：SY/T 5370-2018，铂金环法
+  // 仪器：F5（表界面张力仪）
+  // 测试项目：
+  //   1. 纯水表面张力 × 1次（用于验证仪器状态）
+  //   2. 破胶液表面张力 × 5次（取算术平均）
+  //   3. 破胶液界面张力 × 2次（取算术平均）
+  // 注：每次测试前用酒精灯灼烧铂金环约20-30s并冷却至室温
+  // ─────────────────────────────────────────────────────────────────────────
   surface_tension: {
     type: 'surface_tension',
     label: '表面张力和界面张力',
-    description: '铂金环法，测量表面张力和界面张力',
+    description: '铂金环法（SY/T 5370-2018），测量破胶液表面张力（5次均值）和界面张力（2次均值）',
     icon: '💧',
+    standard: 'SY/T 5370-2018',
     manualParams: [
-      { key: 'room_temperature', label: '室内温度', unit: '℃', type: 'number' },
-      { key: 'room_humidity', label: '室内湿度', unit: '%', type: 'number' },
-      { key: 'sample_density', label: '样品密度 (25℃)', unit: 'g/cm³', type: 'number' },
-      { key: 'kerosene_density', label: '煤油密度 (25℃)', unit: 'g/cm³', type: 'number' },
+      { key: 'room_temperature', label: '室内温度',          unit: '℃',    type: 'number' },
+      { key: 'room_humidity',    label: '室内湿度',          unit: '%',    type: 'number' },
+      { key: 'sample_density',   label: '25℃ 破胶液密度',   unit: 'g/cm³', type: 'number', placeholder: '用于表面张力测试' },
+      { key: 'kerosene_density', label: '25℃ 煤油密度',     unit: 'g/cm³', type: 'number', placeholder: '用于界面张力测试' },
     ],
     cameraFields: [
-      { fieldKey: 'water_surface_tension', label: '纯水表面张力', unit: 'mN/m', maxReadings: 1 },
-      { fieldKey: 'fluid_surface_tension', label: '破胶液表面张力', unit: 'mN/m', maxReadings: 5 },
-      { fieldKey: 'fluid_interface_tension', label: '破胶液界面张力', unit: 'mN/m', maxReadings: 2 },
+      // 全部绑定 F5（表界面张力仪）
+      {
+        fieldKey: 'water_surface_tension',
+        label: '纯水表面张力',
+        unit: 'mN/m',
+        maxReadings: 1,
+        defaultCameraId: 5,
+        description: '测试前先测纯水表面张力，用于验证铂金环状态（标准值约72.8 mN/m @ 20℃）',
+      },
+      {
+        fieldKey: 'fluid_surface_tension',
+        label: '破胶液表面张力',
+        unit: 'mN/m',
+        maxReadings: 5,
+        defaultCameraId: 5,
+        description: '环法测表面张力，上层密度设为0，下层密度输入破胶液密度，共5次取算术平均',
+      },
+      {
+        fieldKey: 'fluid_interface_tension',
+        label: '破胶液界面张力',
+        unit: 'mN/m',
+        maxReadings: 2,
+        defaultCameraId: 5,
+        description: '环法测界面张力，上下层密度按实际值设置（破胶液/煤油），共2次取算术平均',
+      },
     ],
   },
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 测试模板
+  // 9个相机位置（F0~F8）全部开放，每个位置可多次拍照读数
+  // 用于调试、验证读数效果，或不属于以上实验类型的读数任务
+  // ─────────────────────────────────────────────────────────────────────────
   test: {
     type: 'test',
-    label: '测试模板',
-    description: '9个相机位置，选择相机后可选读数，支持多次拍照显示图片',
+    label: '全相机测试',
+    description: '9个相机位（F0~F8）全部开放，支持任意次数拍照，适用于调试和验证',
     icon: '📷',
     manualParams: [],
     cameraFields: [
-      { fieldKey: 'F0', label: '位置0', unit: '', maxReadings: 99 },
-      { fieldKey: 'F1', label: '位置1', unit: '', maxReadings: 99 },
-      { fieldKey: 'F2', label: '位置2', unit: '', maxReadings: 99 },
-      { fieldKey: 'F3', label: '位置3', unit: '', maxReadings: 99 },
-      { fieldKey: 'F4', label: '位置4', unit: '', maxReadings: 99 },
-      { fieldKey: 'F5', label: '位置5', unit: '', maxReadings: 99 },
-      { fieldKey: 'F6', label: '位置6', unit: '', maxReadings: 99 },
-      { fieldKey: 'F7', label: '位置7', unit: '', maxReadings: 99 },
-      { fieldKey: 'F8', label: '位置8', unit: '', maxReadings: 99 },
+      { fieldKey: 'F0', label: 'F0 · 混调器',       unit: '', maxReadings: 99, defaultCameraId: 0 },
+      { fieldKey: 'F1', label: 'F1 · 电子天平1',    unit: '', maxReadings: 99, defaultCameraId: 1 },
+      { fieldKey: 'F2', label: 'F2 · 电子天平2',    unit: '', maxReadings: 99, defaultCameraId: 2 },
+      { fieldKey: 'F3', label: 'F3 · pH计',         unit: '', maxReadings: 99, defaultCameraId: 3 },
+      { fieldKey: 'F4', label: 'F4 · 水质检测仪',   unit: '', maxReadings: 99, defaultCameraId: 4 },
+      { fieldKey: 'F5', label: 'F5 · 表界面张力仪', unit: '', maxReadings: 99, defaultCameraId: 5 },
+      { fieldKey: 'F6', label: 'F6 · 扭矩搅拌器',  unit: '', maxReadings: 99, defaultCameraId: 6 },
+      { fieldKey: 'F7', label: 'F7 · 水浴锅',       unit: '', maxReadings: 99, defaultCameraId: 7 },
+      { fieldKey: 'F8', label: 'F8 · 6速粘度计',   unit: '', maxReadings: 99, defaultCameraId: 8 },
     ],
   },
 }

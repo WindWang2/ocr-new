@@ -23,7 +23,7 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
   const [cameraConfigs, setCameraConfigs] = useState<CameraFieldConfig[]>(() =>
     schema.cameraFields.map(f => ({
       field_key: f.fieldKey,
-      camera_id: f.fieldKey.startsWith('F') ? parseInt(f.fieldKey[1]) : 0,
+      camera_id: f.defaultCameraId,
       max_readings: f.maxReadings,
     }))
   )
@@ -41,7 +41,7 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
       // 默认选中所有读数
       const defaults: Record<number, string[]> = {}
       schema.cameraFields.forEach((f, i) => {
-        const cameraId = cameraConfigs[i]?.camera_id ?? (f.fieldKey.startsWith('F') ? parseInt(f.fieldKey[1]) : 0)
+        const cameraId = cameraConfigs[i]?.camera_id ?? f.defaultCameraId
         defaults[i] = (data[`F${cameraId}`]?.readings || []).map(r => r.key)
       })
       setSelectedReadings(defaults)
@@ -133,6 +133,9 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
                 <div className="flex-1">
                   <div className="text-sm font-medium text-gray-700">{field.label}</div>
                   {instrumentName && <div className="text-[11px] text-brand-500">{instrumentName}</div>}
+                  {field.description && (
+                    <div className="text-[11px] text-gray-400 mt-0.5 leading-relaxed">{field.description}</div>
+                  )}
                 </div>
                 <select
                   value={cameraId}

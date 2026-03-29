@@ -5,7 +5,7 @@ import { EXPERIMENT_SCHEMAS } from '@/lib/experimentTypes'
 import { getCameraInstruments, captureImage, runTestCapture, getExperiment } from '@/lib/api'
 import { Camera, RefreshCw } from 'lucide-react'
 
-export default function TestTemplate({ experiment, onCapture }: ExperimentViewProps) {
+export default function TestTemplate({ experiment, onRefresh }: ExperimentViewProps) {
   const schema = EXPERIMENT_SCHEMAS.test
   const [instruments, setInstruments] = useState<Record<string, { name: string; readings: { key: string; label: string; unit: string }[] }>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -44,7 +44,7 @@ export default function TestTemplate({ experiment, onCapture }: ExperimentViewPr
       const ocrResult = await runTestCapture(experiment.id, fieldKey, cameraId, captureResult.image_path)
 
       // OCR 完成，通知父组件刷新实验数据（获取真实 readings）
-      await onCapture(fieldKey, cameraId)
+      await onRefresh()
 
       // 清除 pending 状态
       setPendingImages(prev => {
@@ -62,7 +62,7 @@ export default function TestTemplate({ experiment, onCapture }: ExperimentViewPr
       })
       setOcrBusy(prev => ({ ...prev, [fieldKey]: false }))
     }
-  }, [experiment.id, onCapture])
+  }, [experiment.id, onRefresh])
 
   // 将 readings 按 camera_id → 图片分组
   const readingsByCamera = new Map<number, Map<string, typeof experiment.readings>>()
