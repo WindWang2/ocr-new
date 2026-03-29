@@ -2,16 +2,16 @@
 /**
  * CaptureSlot — 单个读数槽位
  *
- * 两步拍照流程：
- *   1. captureImage → 立即显示图片
- *   2. runTestCapture → OCR 识别，完成后调用 onComplete()
+ * 每个槽位始终显示一个可编辑的输入框（填空），支持两种方式写入值：
+ *   A. 拍照识别：captureImage → 显示图片 → runTestCapture OCR → 自动填入读数
+ *   B. 手动填写：直接在输入框输入数值，失焦或回车保存
  *
- * 读数可手动编辑：点击值区域进入编辑模式，回车/失焦保存。
+ * 图片消失问题修复：先 await 父组件刷新（reading prop 更新），再清除 pendingImage。
  */
-import { useState, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { Reading } from '@/types'
 import { captureImage, runTestCapture, saveManualReading } from '@/lib/api'
-import { Camera, RefreshCw, RotateCcw, Pencil, Check, X } from 'lucide-react'
+import { Camera, RefreshCw, RotateCcw } from 'lucide-react'
 
 interface Props {
   experimentId: number
@@ -21,7 +21,7 @@ interface Props {
   label: string
   unit: string
   reading: Reading | null
-  onComplete: () => void
+  onComplete: () => Promise<void> | void
   disabled?: boolean
   cameraLabel?: string
   compact?: boolean
@@ -35,10 +35,14 @@ export default function CaptureSlot({
   const [pendingImage, setPendingImage] = useState<string | null>(null)
   const [phase, setPhase] = useState<'idle' | 'capturing' | 'recognizing'>('idle')
   const [error, setError] = useState<string | null>(null)
-  const [editing, setEditing] = useState(false)
-  const [editValue, setEditValue] = useState('')
+  // 输入框的当前文本（跟随 reading 更新，也允许用户直接编辑）
+  const [inputVal, setInputVal] = useState(reading ? String(reading.value) : '')
   const [saving, setSaving] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
+
+  // 当 reading 从外部更新时（OCR/刷新后），同步输入框
+  useEffect(() => {
+    if (reading != null) setInputVal(String(reading.value))
+  }, [reading])
 
   const isBusy = phase !== 'idle'
 
@@ -49,10 +53,13 @@ export default function CaptureSlot({
       setPhase('capturing')
       const { image_path } = await captureImage(experimentId, cameraId)
       if (image_path) setPendingImage(image_path)
+
       setPhase('recognizing')
       await runTestCapture(experimentId, fieldKey, cameraId, image_path)
+
+      // 先等父组件刷新（reading prop 拿到新值），再清除 pendingImage，避免图片闪消
+      await onComplete()
       setPendingImage(null)
-      onComplete()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '拍照失败')
       setPendingImage(null)
@@ -61,28 +68,15 @@ export default function CaptureSlot({
     }
   }
 
-  const startEdit = () => {
-    setEditValue(reading ? String(reading.value) : '')
-    setEditing(true)
-    setTimeout(() => inputRef.current?.select(), 0)
-  }
-
-  const cancelEdit = () => {
-    setEditing(false)
-    setError(null)
-  }
-
-  const commitEdit = async () => {
-    const num = parseFloat(editValue)
-    if (isNaN(num)) {
-      setError('请输入有效数字')
-      return
-    }
+  const handleInputBlur = async () => {
+    const num = parseFloat(inputVal)
+    if (isNaN(num)) return
+    // 值没变则不请求
+    if (reading && reading.value === num) return
     setSaving(true)
     try {
       await saveManualReading(experimentId, fieldKey, slotIndex, num, cameraId)
-      setEditing(false)
-      onComplete()
+      await onComplete()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '保存失败')
     } finally {
@@ -90,42 +84,34 @@ export default function CaptureSlot({
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') commitEdit()
-    if (e.key === 'Escape') cancelEdit()
+  const handleInputKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') e.currentTarget.blur()
   }
 
-  const displayImage = reading?.image_path ?? null
-  const hasReading = reading !== null
+  // 显示图片：优先 pending（拍照中/识别中），其次已保存的
+  const displayImage = pendingImage ?? reading?.image_path ?? null
 
-  // ── 编辑态：内联输入框 ────────────────────────────────────────────────────
-  const editWidget = editing ? (
+  // ── 输入框（所有模式共用）────────────────────────────────────────────────
+  const inputBox = (
     <div className="flex items-center gap-1.5">
       <input
-        ref={inputRef}
         type="number"
-        value={editValue}
-        onChange={e => setEditValue(e.target.value)}
-        onKeyDown={handleKeyDown}
-        className="w-24 px-2 py-1 text-sm border border-brand-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-brand-400 tabular-nums"
-        placeholder="输入数值"
+        value={inputVal}
+        onChange={e => setInputVal(e.target.value)}
+        onBlur={handleInputBlur}
+        onKeyDown={handleInputKey}
         disabled={saving}
-        autoFocus
+        placeholder="—"
+        className={`w-24 px-2 py-1 text-sm font-semibold tabular-nums border rounded-lg focus:outline-none focus:ring-1 transition ${
+          saving
+            ? 'bg-gray-50 text-gray-400 border-gray-200'
+            : 'bg-white border-gray-200 text-gray-800 focus:border-brand-400 focus:ring-brand-200 hover:border-gray-300'
+        }`}
       />
-      <span className="text-xs text-gray-400">{unit}</span>
-      <button
-        onClick={commitEdit}
-        disabled={saving}
-        className="p-1 rounded text-emerald-500 hover:bg-emerald-50 transition disabled:opacity-40"
-        title="确认"
-      >
-        {saving ? <RefreshCw size={12} className="animate-spin" /> : <Check size={12} />}
-      </button>
-      <button onClick={cancelEdit} className="p-1 rounded text-gray-400 hover:bg-gray-50 transition" title="取消">
-        <X size={12} />
-      </button>
+      <span className="text-xs text-gray-400 shrink-0">{unit}</span>
+      {saving && <RefreshCw size={11} className="animate-spin text-gray-400" />}
     </div>
-  ) : null
+  )
 
   if (compact) {
     // ── 紧凑模式：表观黏度 3列网格 ──────────────────────────────────────────
@@ -133,9 +119,9 @@ export default function CaptureSlot({
       <div className="flex flex-col border border-gray-100 rounded-xl overflow-hidden bg-white">
         {/* 图片区 */}
         <div className="relative bg-gray-50 h-28">
-          {(pendingImage || displayImage) ? (
+          {displayImage ? (
             <img
-              src={`/images/${pendingImage || displayImage}`}
+              src={`/images/${displayImage}`}
               alt={label}
               className="w-full h-full object-cover"
             />
@@ -153,55 +139,30 @@ export default function CaptureSlot({
             </div>
           )}
         </div>
+
         {/* 底部 */}
-        <div className="px-2.5 py-2 flex flex-col gap-1">
+        <div className="px-2.5 py-2 flex flex-col gap-1.5">
           <div className="flex items-center justify-between">
             <span className="text-[11px] text-gray-400">{label}</span>
             {cameraLabel && <span className="text-[10px] text-gray-300">{cameraLabel}</span>}
           </div>
-          {editing ? (
-            <div className="py-0.5">{editWidget}</div>
-          ) : hasReading ? (
-            <div className="flex items-center justify-between">
-              <button
-                onClick={startEdit}
-                className="font-bold text-gray-800 text-lg tabular-nums hover:text-brand-600 transition group flex items-center gap-1"
-                title="点击编辑"
-              >
-                {reading.value}
-                <span className="text-xs font-normal text-gray-400 ml-1">{unit}</span>
-                <Pencil size={10} className="text-gray-300 group-hover:text-brand-400 transition" />
-              </button>
-              <button
-                onClick={handleCapture}
-                disabled={isBusy || disabled}
-                title="重新拍摄"
-                className="p-1 rounded text-gray-300 hover:text-gray-500 transition disabled:opacity-30"
-              >
-                <RotateCcw size={12} />
-              </button>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-1">
-              <button
-                onClick={handleCapture}
-                disabled={isBusy || disabled}
-                className={`w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition ${
-                  isBusy || disabled ? 'bg-gray-100 text-gray-400 cursor-wait' : 'text-white hover:opacity-90'
-                }`}
-                style={!(isBusy || disabled) ? { background: 'var(--brand)' } : undefined}
-              >
-                {isBusy ? <RefreshCw size={11} className="animate-spin" /> : <Camera size={11} />}
-                {phase === 'capturing' ? '拍摄中' : phase === 'recognizing' ? '识别中' : '拍照'}
-              </button>
-              <button
-                onClick={startEdit}
-                className="w-full flex items-center justify-center gap-1 py-1 rounded-lg text-[11px] text-gray-400 border border-gray-150 hover:border-gray-300 hover:text-gray-600 transition"
-              >
-                <Pencil size={10} />手动输入
-              </button>
-            </div>
-          )}
+
+          {/* 输入框 */}
+          {inputBox}
+
+          {/* 拍照按钮 */}
+          <button
+            onClick={handleCapture}
+            disabled={isBusy || disabled}
+            className={`w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition ${
+              isBusy || disabled ? 'bg-gray-100 text-gray-400 cursor-wait' : 'text-white hover:opacity-90'
+            }`}
+            style={!(isBusy || disabled) ? { background: 'var(--brand)' } : undefined}
+          >
+            {isBusy ? <RefreshCw size={11} className="animate-spin" /> : <Camera size={11} />}
+            {phase === 'capturing' ? '拍摄中' : phase === 'recognizing' ? '识别中' : '拍照识别'}
+          </button>
+
           {error && <p className="text-[10px] text-red-500 truncate" title={error}>{error}</p>}
         </div>
       </div>
@@ -214,9 +175,9 @@ export default function CaptureSlot({
       <div className="flex items-start gap-4 p-4">
         {/* 左侧：图片 */}
         <div className="relative shrink-0 w-48 h-36 rounded-lg overflow-hidden bg-gray-50 border border-gray-100">
-          {(pendingImage || displayImage) ? (
+          {displayImage ? (
             <img
-              src={`/images/${pendingImage || displayImage}`}
+              src={`/images/${displayImage}`}
               alt={label}
               className="w-full h-full object-cover"
             />
@@ -235,83 +196,49 @@ export default function CaptureSlot({
           )}
         </div>
 
-        {/* 右侧：信息 + 按钮 */}
+        {/* 右侧：信息 + 输入框 + 按钮 */}
         <div className="flex-1 min-w-0 flex flex-col justify-between h-36">
           <div>
             <div className="flex items-center gap-2 mb-1">
               <span className="font-semibold text-gray-700 text-sm">{label}</span>
-              <span className="text-[11px] text-gray-300">/</span>
-              <span className="text-[11px] text-gray-400">槽位 {slotIndex + 1}</span>
+              {cameraLabel && (
+                <span className="text-[11px] text-gray-400">{cameraLabel}</span>
+              )}
             </div>
-            {cameraLabel && (
-              <div className="text-[11px] text-gray-400 mb-2">{cameraLabel}</div>
-            )}
             {reading?.timestamp && (
-              <div className="text-[11px] text-gray-300">
+              <div className="text-[11px] text-gray-300 mb-2">
                 {new Date(reading.timestamp).toLocaleString('zh-CN', {
                   month: '2-digit', day: '2-digit',
                   hour: '2-digit', minute: '2-digit', second: '2-digit',
                 })}
               </div>
             )}
+            {/* 读数输入框（始终可见） */}
+            <div className="mt-1">{inputBox}</div>
           </div>
 
-          <div className="flex items-end justify-between">
-            {/* 读数值 / 编辑态 */}
-            <div>
-              {editing ? (
-                editWidget
-              ) : hasReading ? (
-                <button
-                  onClick={startEdit}
-                  className="group flex items-baseline gap-1 hover:text-brand-600 transition"
-                  title="点击编辑读数"
-                >
-                  <span className="text-3xl font-bold tabular-nums text-gray-800 group-hover:text-brand-600 transition">
-                    {reading.value}
-                  </span>
-                  <span className="text-sm text-gray-400 ml-1">{unit}</span>
-                  <Pencil size={12} className="text-gray-300 group-hover:text-brand-400 transition mb-1" />
-                </button>
-              ) : (
-                <span className="text-sm text-gray-300">暂无读数</span>
-              )}
-            </div>
-
-            {/* 操作按钮 */}
-            {!editing && (
-              <div className="flex gap-2">
-                {!hasReading && (
-                  <button
-                    onClick={startEdit}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-500 border border-gray-200 hover:border-gray-300 transition"
-                  >
-                    <Pencil size={12} />手动
-                  </button>
-                )}
-                {hasReading && (
-                  <button
-                    onClick={handleCapture}
-                    disabled={isBusy || disabled}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-500 border border-gray-200 hover:border-gray-300 transition disabled:opacity-40"
-                  >
-                    <RotateCcw size={12} />重拍
-                  </button>
-                )}
-                {!hasReading && (
-                  <button
-                    onClick={handleCapture}
-                    disabled={isBusy || disabled}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium transition ${
-                      isBusy || disabled ? 'bg-gray-100 text-gray-400 cursor-wait' : 'text-white hover:opacity-90 shadow-sm'
-                    }`}
-                    style={!(isBusy || disabled) ? { background: 'var(--brand)' } : undefined}
-                  >
-                    {isBusy ? <RefreshCw size={13} className="animate-spin" /> : <Camera size={13} />}
-                    {phase === 'capturing' ? '拍摄中...' : phase === 'recognizing' ? '识别中...' : '拍照识别'}
-                  </button>
-                )}
-              </div>
+          <div className="flex items-center gap-2 justify-end">
+            {reading && (
+              <button
+                onClick={handleCapture}
+                disabled={isBusy || disabled}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-500 border border-gray-200 hover:border-gray-300 transition disabled:opacity-40"
+              >
+                <RotateCcw size={12} />重拍
+              </button>
+            )}
+            {!reading && (
+              <button
+                onClick={handleCapture}
+                disabled={isBusy || disabled}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium transition ${
+                  isBusy || disabled ? 'bg-gray-100 text-gray-400 cursor-wait' : 'text-white hover:opacity-90 shadow-sm'
+                }`}
+                style={!(isBusy || disabled) ? { background: 'var(--brand)' } : undefined}
+              >
+                {isBusy ? <RefreshCw size={13} className="animate-spin" /> : <Camera size={13} />}
+                {phase === 'capturing' ? '拍摄中...' : phase === 'recognizing' ? '识别中...' : '拍照识别'}
+              </button>
             )}
           </div>
         </div>
