@@ -15,16 +15,19 @@
  *   η = α × 5.077 / 1.704   （η 单位：mPa·s；α 为 100rpm 读数）
  *   最终结果取实验1、实验2的平均值
  */
+import { useState } from 'react'
 import { ExperimentViewProps, Reading } from '@/types'
 import { EXPERIMENT_SCHEMAS } from '@/lib/experimentTypes'
 import CaptureSlot from '@/components/ExperimentDetail/CaptureSlot'
 import ResultSummary from '@/components/ExperimentDetail/ResultSummary'
+import { ChevronDown } from 'lucide-react'
 
 const RPM_FIELDS = ['rpm3', 'rpm6', 'rpm100'] as const
 const RPM_LABELS = { rpm3: '3 rpm', rpm6: '6 rpm', rpm100: '100 rpm (α)' }
 
 export default function ApparentViscosity({ experiment, onRefresh }: ExperimentViewProps) {
   const schema = EXPERIMENT_SCHEMAS.apparent_viscosity
+  const [showGuide, setShowGuide] = useState(false)
 
   const getCameraId = (fieldKey: string) => {
     const config = experiment.camera_configs.find(c => c.field_key === fieldKey)
@@ -32,11 +35,9 @@ export default function ApparentViscosity({ experiment, onRefresh }: ExperimentV
     return config?.camera_id ?? def?.defaultCameraId ?? 8
   }
 
-  // 查找特定字段、特定实验轮次的读数
   const getReading = (fieldKey: string, runIndex: number): Reading | null =>
     experiment.readings.find(r => r.field_key === fieldKey && r.run_index === runIndex) ?? null
 
-  // 计算单次实验的 η 值
   const calcEta = (runIndex: number): string => {
     const r = getReading('rpm100', runIndex)
     if (!r) return '—'
@@ -47,13 +48,36 @@ export default function ApparentViscosity({ experiment, onRefresh }: ExperimentV
   return (
     <div className="space-y-6">
 
-      {/* 说明 */}
-      <div className="bg-amber-50/60 rounded-xl px-4 py-3 border border-amber-100">
-        <p className="text-xs text-amber-700 leading-relaxed">
-          <span className="font-semibold">操作顺序：</span>
-          每组实验先将粘度计转速依次设置为 3rpm → 6rpm → 100rpm，各拍一张。
-          计算公式：<span className="font-mono">η = α × 5.077 / 1.704</span>，α 为 100rpm 读数。
-        </p>
+      {/* 操作指南（可折叠） */}
+      <div className="rounded-xl border border-gray-100 overflow-hidden">
+        <button
+          onClick={() => setShowGuide(v => !v)}
+          className="w-full flex items-center justify-between px-4 py-3 bg-amber-50/60 hover:bg-amber-50 transition text-left"
+        >
+          <div>
+            <span className="text-xs font-semibold text-amber-700">操作规程</span>
+            <span className="text-[11px] text-amber-500 ml-2">WLD/CNAS-QP7080004 · 检测原始记录</span>
+          </div>
+          <ChevronDown size={14} className={`text-amber-400 transition-transform ${showGuide ? 'rotate-180' : ''}`} />
+        </button>
+        {showGuide && (
+          <div className="px-4 py-3 bg-white space-y-2 text-[12px] text-gray-600 leading-relaxed">
+            <p>
+              每组实验先将粘度计转速依次设置为 <strong>3rpm → 6rpm → 100rpm</strong>，各拍一张读数。
+              实验1 和 实验2 分别独立完成。
+            </p>
+            <div className="bg-amber-50/60 rounded-lg px-3 py-2">
+              <p className="font-mono text-amber-700">η = α × 5.077 / 1.704</p>
+              <ul className="mt-1.5 space-y-0.5 text-gray-500 font-sans">
+                <li>η — 表观粘度（mPa·s）</li>
+                <li>α — 100 r/min 转速下的粘度计读数</li>
+                <li>5.077 — α 为 1 时的剪切应力值（×10⁻¹ Pa）</li>
+                <li>1.704 — 粘度计转数 1 r/min 的剪切速率值（s⁻¹）</li>
+              </ul>
+            </div>
+            <p className="text-gray-500">最终结果取实验1、实验2的表观粘度平均值。</p>
+          </div>
+        )}
       </div>
 
       {/* 实验1 和 实验2 */}
@@ -72,7 +96,7 @@ export default function ApparentViscosity({ experiment, onRefresh }: ExperimentV
           {/* 三列读数槽：3rpm / 6rpm / 100rpm */}
           <div className="p-4 grid grid-cols-3 gap-3">
             {RPM_FIELDS.map(fieldKey => {
-              const cameraId = getCameraId(fieldKey)
+              const camId = getCameraId(fieldKey)
               const def = schema.cameraFields.find(f => f.fieldKey === fieldKey)!
               return (
                 <div key={fieldKey}>
@@ -82,13 +106,13 @@ export default function ApparentViscosity({ experiment, onRefresh }: ExperimentV
                   <CaptureSlot
                     experimentId={experiment.id}
                     fieldKey={fieldKey}
-                    cameraId={cameraId}
+                    cameraId={camId}
                     slotIndex={runIndex}
                     label={`实验${runIndex + 1}`}
                     unit={def.unit}
                     reading={getReading(fieldKey, runIndex)}
                     onComplete={onRefresh}
-                    cameraLabel={`F${cameraId}`}
+                    cameraLabel={`F${camId}`}
                     compact
                   />
                 </div>

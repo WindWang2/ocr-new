@@ -17,14 +17,17 @@
  *   - 冷却约10s后挂在延长钩上待测
  *   - 上升速度和下降速度默认 10mm/min
  */
+import { useState } from 'react'
 import { ExperimentViewProps } from '@/types'
 import { EXPERIMENT_SCHEMAS } from '@/lib/experimentTypes'
 import CaptureSlot from '@/components/ExperimentDetail/CaptureSlot'
 import ResultSummary from '@/components/ExperimentDetail/ResultSummary'
+import { ChevronDown } from 'lucide-react'
 
 export default function SurfaceTension({ experiment, onRefresh }: ExperimentViewProps) {
   const schema = EXPERIMENT_SCHEMAS.surface_tension
   const p = experiment.manual_params
+  const [showGuide, setShowGuide] = useState(false)
 
   const getCameraId = (fieldKey: string) => {
     const config = experiment.camera_configs.find(c => c.field_key === fieldKey)
@@ -35,7 +38,6 @@ export default function SurfaceTension({ experiment, onRefresh }: ExperimentView
   const getReading = (fieldKey: string, slotIndex: number) =>
     experiment.readings.find(r => r.field_key === fieldKey && r.run_index === slotIndex) ?? null
 
-  // 各字段配置
   const waterField    = schema.cameraFields.find(f => f.fieldKey === 'water_surface_tension')!
   const surfaceField  = schema.cameraFields.find(f => f.fieldKey === 'fluid_surface_tension')!
   const interfaceField = schema.cameraFields.find(f => f.fieldKey === 'fluid_interface_tension')!
@@ -52,12 +54,41 @@ export default function SurfaceTension({ experiment, onRefresh }: ExperimentView
           <ParamRow label="25℃ 破胶液密度" value={p.sample_density} unit="g/cm³" />
           <ParamRow label="25℃ 煤油密度" value={p.kerosene_density} unit="g/cm³" />
         </div>
-        <p className="text-[11px] text-gray-400 mt-3 pt-3 border-t border-gray-100">
-          执行标准：SY/T 5370-2018 铂金环法 · 上升/下降速度默认 10 mm/min
-        </p>
       </div>
 
-      {/* ── 第1节：纯水表面张力 ──────────────────────────────────────────── */}
+      {/* 操作规程（可折叠） */}
+      <div className="rounded-xl border border-gray-100 overflow-hidden">
+        <button
+          onClick={() => setShowGuide(v => !v)}
+          className="w-full flex items-center justify-between px-4 py-3 bg-cyan-50/60 hover:bg-cyan-50 transition text-left"
+        >
+          <div>
+            <span className="text-xs font-semibold text-cyan-700">操作规程</span>
+            <span className="text-[11px] text-cyan-500 ml-2">SY/T 5370-2018 铂金环法</span>
+          </div>
+          <ChevronDown size={14} className={`text-cyan-400 transition-transform ${showGuide ? 'rotate-180' : ''}`} />
+        </button>
+        {showGuide && (
+          <div className="px-4 py-3 bg-white space-y-2 text-[12px] text-gray-600 leading-relaxed">
+            <p>
+              配制浓度为 <strong>0.3%</strong> 的助排剂水溶液 500 mL，用移液管吸取 1.5 mL 助排剂置于装有 400 mL 蒸馏水的
+              500 mL 容量瓶中，用蒸馏水稀释至刻度后摇匀，备用。
+            </p>
+            <ol className="list-decimal list-inside space-y-1 text-gray-600">
+              <li>取少量样品对玻璃器皿内壁进行预润湿，润湿后将样品倒掉，重新往器皿内倒入 7~10 mm 高度的样品，将器皿放在托盘上待测。</li>
+              <li>酒精灯烧铂金环，与水平面呈 45° 进行，直到铂金丝灼烧至红炽状态（约 20–30 s）。等待约 10 s 冷却后，挂在延长钩下待测。</li>
+              <li>上升速度和下降速度默认 10 mm/min，可在启动测试前修改（范围 1~300 mm/min）。</li>
+              <li>关闭玻璃移门，点击"上升键"托盘缓慢上升，目视铂金环浸入样品约 2 mm 深后停止。点击"去皮键"归零。</li>
+              <li>环法测试表面张力：上层密度默认 0，下层密度输入样品密度值。测试界面张力时按实际密度设置上下层。</li>
+              <li>点击"启动测试键"开始自动测量，左侧实时显示测量曲线。</li>
+              <li>随托盘缓慢下降，数值逐渐增大；当铂金环与液体即将分离时，显示最大值即为最终结果。</li>
+              <li>铂金环与液体分离后，测试自动停止，托盘停止下降。</li>
+            </ol>
+          </div>
+        )}
+      </div>
+
+      {/* ── 第1节：纯水表面张力 */}
       <Section
         title="纯水表面张力"
         subtitle="验证铂金环状态，标准值约 72.8 mN/m (20℃)"
@@ -77,7 +108,7 @@ export default function SurfaceTension({ experiment, onRefresh }: ExperimentView
         <p className="text-[11px] text-gray-400 mt-2">{waterField.description}</p>
       </Section>
 
-      {/* ── 第2节：破胶液表面张力（5次） ─────────────────────────────────── */}
+      {/* ── 第2节：破胶液表面张力（5次） */}
       <Section
         title="破胶液表面张力"
         subtitle={`5次实验取算术平均 · 样品密度 ${p.sample_density ?? '—'} g/cm³`}
@@ -106,7 +137,7 @@ export default function SurfaceTension({ experiment, onRefresh }: ExperimentView
         />
       </Section>
 
-      {/* ── 第3节：破胶液界面张力（2次） ─────────────────────────────────── */}
+      {/* ── 第3节：破胶液界面张力（2次） */}
       <Section
         title="破胶液界面张力"
         subtitle={`2次实验取算术平均 · 煤油密度 ${p.kerosene_density ?? '—'} g/cm³`}

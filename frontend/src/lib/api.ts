@@ -139,6 +139,23 @@ export async function runTestCapture(
   return data
 }
 
+export async function saveManualReading(
+  experimentId: number,
+  fieldKey: string,
+  runIndex: number,
+  value: number,
+  cameraId: number = 0,
+): Promise<Reading> {
+  const data = await request<{ success: boolean; reading: Reading }>(
+    `/experiments/${experimentId}/readings`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ field_key: fieldKey, run_index: runIndex, value, camera_id: cameraId }),
+    },
+  )
+  return data.reading
+}
+
 export async function getImageDir(): Promise<string> {
   const data = await request<{ image_dir: string }>('/config/image-dir')
   return data.image_dir

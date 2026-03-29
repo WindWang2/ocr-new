@@ -31,7 +31,7 @@ from backend.models.database import (
     init_db, add_camera, get_cameras, get_camera_by_id,
     create_experiment,
     get_experiment, list_experiments, delete_experiment,
-    create_reading, get_readings_by_experiment, get_connection,
+    create_reading, upsert_reading, get_readings_by_experiment, get_connection,
     get_config, set_config,
 )
 from backend.services.camera_control import (
@@ -513,6 +513,29 @@ def get_camera_instruments():
         },
     }
     return {"success": True, "cameras": CAMERA_INSTRUMENTS}
+
+
+class ManualReadingBody(BaseModel):
+    field_key: str
+    run_index: int
+    value: float
+    camera_id: int = 0
+
+
+@app.put("/experiments/{exp_id}/readings")
+def save_manual_reading(exp_id: int, body: ManualReadingBody):
+    """手动保存/更新单次读数（用于 OCR 失败时人工填写）"""
+    experiment = get_experiment(exp_id)
+    if not experiment:
+        raise HTTPException(status_code=404, detail="实验不存在")
+    reading = upsert_reading(
+        experiment_id=exp_id,
+        field_key=body.field_key,
+        camera_id=body.camera_id,
+        value=body.value,
+        run_index=body.run_index,
+    )
+    return {"success": True, "reading": reading}
 
 
 @app.delete("/experiments/{exp_id}")

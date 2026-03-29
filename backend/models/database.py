@@ -273,6 +273,39 @@ def create_reading(
     }
 
 
+def upsert_reading(
+    experiment_id: int,
+    field_key: str,
+    camera_id: int,
+    value: float,
+    run_index: int,
+) -> dict:
+    """保存或更新读数（若该字段+槽位已存在则更新值，否则新增）"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ts = datetime.now().isoformat()
+    cursor.execute(
+        """SELECT id FROM experiment_readings
+           WHERE experiment_id=? AND field_key=? AND run_index=?""",
+        (experiment_id, field_key, run_index),
+    )
+    row = cursor.fetchone()
+    if row:
+        cursor.execute(
+            "UPDATE experiment_readings SET value=?, camera_id=?, timestamp=? WHERE id=?",
+            (value, camera_id, ts, row["id"]),
+        )
+        conn.commit()
+        reading_id = row["id"]
+        cursor.execute("SELECT * FROM experiment_readings WHERE id=?", (reading_id,))
+        updated = dict(cursor.fetchone())
+        conn.close()
+        return updated
+    else:
+        conn.close()
+        return create_reading(experiment_id, field_key, camera_id, value, run_index)
+
+
 def get_readings_by_experiment(experiment_id: int) -> List[dict]:
     """获取实验的所有读数，按 field_key + run_index 排序"""
     conn = get_connection()
