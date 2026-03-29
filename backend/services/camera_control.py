@@ -39,40 +39,78 @@ class CameraClient:
         """默认配置"""
         return Config.get_camera_config()
     
+    def _snapshot_existing_files(self) -> set:
+        """记录当前图片目录中已存在的所有文件名（用于检测新文件）"""
+        today_dir = self.image_dir / datetime.now().strftime("%Y%m%d")
+        extensions = {".jpg", ".jpeg", ".png", ".bmp"}
+        existing = set()
+        for d in [today_dir, self.image_dir]:
+            if d.exists():
+                existing.update(
+                    p.name for p in d.iterdir()
+                    if p.is_file() and p.suffix.lower() in extensions
+                )
+        return existing
+
+    def _wait_for_new_image(self, existing_files: set, timeout: float = None, interval: float = None) -> Optional[Path]:
+        """等待相机写入新的 BMP/图片文件，返回新文件路径"""
+        timeout = timeout or self.config.get("file_wait_timeout", 15.0)
+        interval = interval or self.config.get("file_check_interval", 0.5)
+        today_dir = self.image_dir / datetime.now().strftime("%Y%m%d")
+        extensions = {".jpg", ".jpeg", ".png", ".bmp"}
+        deadline = time.time() + timeout
+
+        logger.info(f"[相机{self.camera_id}] 等待新图片文件（超时 {timeout}s）...")
+        while time.time() < deadline:
+            for d in [today_dir, self.image_dir]:
+                if not d.exists():
+                    continue
+                for p in d.iterdir():
+                    if p.is_file() and p.suffix.lower() in extensions and p.name not in existing_files:
+                        logger.info(f"[相机{self.camera_id}] 检测到新文件: {p.name}")
+                        return p
+            time.sleep(interval)
+
+        logger.warning(f"[相机{self.camera_id}] 等待新图片超时（{timeout}s）")
+        return None
+
     def trigger_and_read(self) -> Tuple[bool, dict]:
         """
         触发相机拍照并读取仪器读数
-        
+
         Returns:
             (success, result_dict)
         """
         try:
-            # 1. 连接相机控制端口
+            # 1. 记录拍照前已存在的文件（用于检测新文件）
+            existing_files = self._snapshot_existing_files()
+
+            # 2. 连接相机控制端口
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(self.capture_timeout)
-            
+
             logger.info(f"[相机{self.camera_id}] 连接 {self.control_host}:{self.control_port}")
             sock.connect((self.control_host, self.control_port))
 
-            # 2. 发送拍照指令 VTFP,X\r\n
+            # 3. 发送拍照指令 VTFP,X\r\n
             command = f"{self.trigger_prefix},{self.camera_id}\r\n"
             sock.sendall(command.encode('utf-8'))
             logger.info(f"[相机{self.camera_id}] 发送指令: {command.strip()}")
 
-            # 3. 等待响应
+            # 4. 等待响应
             response = sock.recv(4096).decode('utf-8').strip()
             sock.close()
 
             logger.info(f"[相机{self.camera_id}] 响应: {response}")
 
-            # 4. 检查拍照是否成功（VTFP,0 表示成功）
+            # 5. 检查拍照是否成功（VTFP,0 表示成功）
             if response != "VTFP,0":
                 return False, {"camera_id": self.camera_id, "error": f"相机返回错误: {response}", "success": False}
 
-            # 5. 在 F{id}/YYYYMMDD/ 目录中查找最新的 BMP 图片并转换为 JPG
-            image_path = self._find_latest_image()
+            # 6. 等待相机将新 BMP 写入 F{id}/YYYYMMDD/ 目录
+            image_path = self._wait_for_new_image(existing_files)
             if not image_path:
-                return False, {"camera_id": self.camera_id, "error": "拍照成功但未找到图片文件", "success": False}
+                return False, {"camera_id": self.camera_id, "error": "拍照成功但未检测到新图片文件", "success": False}
 
             # 转换 BMP -> JPG（缩小）
             jpg_path = self._convert_bmp_to_jpg(image_path)

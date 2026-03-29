@@ -14,3 +14,7 @@ data/
 logs/
 camera_images/
 demo/origin/
+json/
+clip_library.json
+test_img/
+*.xlsx

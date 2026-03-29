@@ -112,13 +112,34 @@ class InstrumentLibrary:
         }
     }
 
+    # OCR关键词识别规则（按优先级排列）
+    OCR_KEYWORD_RULES = [
+        ("water_quality_meter",   ["空白值", "检测值", "吸光度", "透光度"]),
+        ("wuying_mixer_auto",     ["段一", "段二", "段三"]),
+        ("wuying_mixer_manual",   ["高速", "低速"]),
+        ("ph_meter",              ["PTS", "MTC", "pH"]),
+        ("surface_tension_meter", ["表/界面张力", "上升速度", "下降速度"]),
+        ("torque_stirrer",        ["N.cm", "rpm"]),
+        ("viscometer_6speed",     ["剪切速率", "表观粘度"]),
+        ("temperature_controller",["TEMP", "TIME"]),
+        ("electronic_balance",    ["g"]),
+    ]
+
+    @classmethod
+    def identify_by_ocr_keywords(cls, ocr_text: str) -> str:
+        """根据OCR文字用关键词规则识别仪器类型"""
+        for instrument_type, keywords in cls.OCR_KEYWORD_RULES:
+            if all(kw in ocr_text for kw in keywords):
+                return instrument_type
+        return "unknown"
+
     # 相机编号到仪器的映射（来源：相机.xlsx）
     # F0: 超级吴英混调器（自动/手动两种模式）
     # F1: 电子天枰1号  F2: 电子天枰2号
     # F3: PH仪  F4: 水质检测仪  F5: 表界面张力仪
     # F6: 电动搅拌器  F7: 水浴锅  F8: 6速旋转粘度计
     CAMERA_PROMPTS = {
-        "F0": """这是超级吴英混调器控制屏幕。请先判断当前是自动模式还是手动模式（看左侧菜单哪个选项高亮），然后读取对应数值。
+        "F0": """这是超级吴英混调器（SN: 258795）控制屏幕。请先判断当前是自动模式还是手动模式（看左侧菜单哪个选项高亮），然后读取对应数值。
 
 自动模式字段：seg1_speed(段一转速,转)、seg1_time(段一时间,S)、seg2_speed(段二转速,转)、seg2_time(段二时间,S)、seg3_speed(段三转速,转)、seg3_time(段三时间,S)、total_time(总时长,S)、remaining_time(剩余时长,S)、current_segment(当前段数)、current_speed(当前转速,转)
 
@@ -131,74 +152,74 @@ class InstrumentLibrary:
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
 
-自动模式：{"instrument_type": "wuying_mixer_auto", "readings": {"seg1_speed": 0, "seg1_time": 0, "seg2_speed": 0, "seg2_time": 0, "seg3_speed": 0, "seg3_time": 0, "total_time": 0, "remaining_time": 0, "current_segment": 0, "current_speed": 0}, "confidence": 0.95}
-手动模式：{"instrument_type": "wuying_mixer_manual", "readings": {"high_speed": 0, "high_time": 0, "low_speed": 0, "low_time": 0, "remaining_time": 0, "current_speed": 0}, "confidence": 0.95}
+自动模式：{"mode": "auto", "seg1_speed": 0, "seg1_time": 0, "seg2_speed": 0, "seg2_time": 0, "seg3_speed": 0, "seg3_time": 0, "total_time": 0, "remaining_time": 0, "current_segment": 0, "current_speed": 0}
+手动模式：{"mode": "manual", "high_speed": 0, "high_time": 0, "low_speed": 0, "low_time": 0, "remaining_time": 0, "current_speed": 0}
 
 只输出一行JSON，数值为纯数字不含单位，无法读取的值设为null。
 """,
 
-        "F1": """这是电子天枰1号，读取屏幕显示的重量数值。
+        "F1": """这是电子天枰1号（SN: 53662），读取屏幕显示的重量数值。
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"instrument_type": "electronic_balance", "readings": {"weight": 0.00}, "confidence": 0.95}
+{"weight": 0.00}
 
-注意：仔细辨认小数点位置（LED数码管上小数点很小），数值单位为g。只输出一行JSON，数值不含单位。
+注意：仔细辨认小数点位置（LED数码管上小数点很小），数值单位为g，只输出纯数字不含单位。
 """,
 
-        "F2": """这是电子天枰2号，读取屏幕显示的重量数值。
+        "F2": """这是电子天枰2号（SN: 230199），读取屏幕显示的重量数值。
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"instrument_type": "electronic_balance", "readings": {"weight": 0.00}, "confidence": 0.95}
+{"weight": 0.00}
 
-注意：仔细辨认小数点位置（LED数码管上小数点很小），数值单位为g。只输出一行JSON，数值不含单位。
+注意：仔细辨认小数点位置（LED数码管上小数点很小），数值单位为g，只输出纯数字不含单位。
 """,
 
-        "F3": """这是PH仪，读取屏幕上的三个数值：pH值(ph_value)、温度(temperature,°C)、PTS值(pts,%PTS)。
+        "F3": """这是PH仪（SN: 176585），读取屏幕上的三个数值：pH值(ph_value)、温度(temperature,°C,MTC)、PTS值(pts,%PTS)。
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"instrument_type": "ph_meter", "readings": {"ph_value": 0.00, "temperature": 0.0, "pts": 0.0}, "confidence": 0.95}
+{"ph_value": 0.00, "temperature": 0.0, "pts": 0.0}
 
 注意：pH值通常带2位小数，温度带1位小数，PTS通常为100.0。只输出一行JSON，数值不含单位，无法读取设为null。
 """,
 
-        "F4": """这是水质检测仪，检测总硬度。请先判断当前是高量程还是低量程模式，然后读取屏幕显示的所有数值。
+        "F4": """这是水质检测仪（SN: 43373），检测总硬度。请先判断当前是高量程还是低量程模式，然后读取屏幕显示的所有数值。
 
-读数字段：检测日期(date)、空白值(blank_value)、检测值(test_value)、吸光度(absorbance)、含量mg/L(content_mg_l)、透光度%(transmittance)、当前量程模式(mode)
+读数字段：当前量程模式(mode)、检测日期(date)、空白值(blank_value)、检测值(test_value)、吸光度(absorbance)、含量mg/L(content_mg_l)、透光度%(transmittance)
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"instrument_type": "water_quality_meter", "readings": {"date": "", "blank_value": 0, "test_value": 0, "absorbance": 0.000, "content_mg_l": 0.00, "transmittance": 0.0, "mode": "high"}, "confidence": 0.95}
+{"mode": "high", "date": "", "blank_value": 0, "test_value": 0, "absorbance": 0.000, "content_mg_l": 0.00, "transmittance": 0.0}
 
-注意：date字段为字符串（格式xxxx-xx-xx xx:xx:xx），mode字段为"high"（高量程）或"low"（低量程），其他字段为数值，无法读取设为null。只输出一行JSON。
+注意：mode字段为"high"（高量程）或"low"（低量程），date字段为字符串（格式xxxx-xx-xx xx:xx:xx），其他字段为数值，无法读取设为null。只输出一行JSON。
 """,
 
-        "F5": """这是表界面张力仪，读取屏幕上的六个数值：表/界面张力(tension,nN/m)、温度(temperature,°C)、上层密度(upper_density,g/cm3)、下层密度(lower_density,g/cm3)、上升速度(rise_speed,mm/min)、下降速度(fall_speed,mm/min)。
+        "F5": """这是表界面张力仪（SN: 101663），读取屏幕上的六个数值：表/界面张力(tension,nN/m)、温度(temperature,°C)、上层密度(upper_density,g/cm3)、下层密度(lower_density,g/cm3)、上升速度(rise_speed,mm/min)、下降速度(fall_speed,mm/min)。
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"instrument_type": "surface_tension_meter", "readings": {"tension": 0.000, "temperature": 0.0, "upper_density": 0.000, "lower_density": 0.000, "rise_speed": 0, "fall_speed": 0}, "confidence": 0.95}
+{"tension": 0.000, "temperature": 0.0, "upper_density": 0.000, "lower_density": 0.000, "rise_speed": 0, "fall_speed": 0}
 
 注意：张力通常带3位小数，可能为负数；温度若显示N/A则设为null；F值旁的-/+是按钮不是正负号。只输出一行JSON，数值不含单位。
 """,
 
-        "F6": """这是电动搅拌器，屏幕显示三行数值：第一行转速(rotation_speed,rpm)、第二行张力(torque,N/cm)、第三行时间(time)。
+        "F6": """这是电动搅拌器（SN: 208721），屏幕显示三行数值：第一行转速(rotation_speed,rpm)、第二行张力(torque,N/cm)、第三行时间(time,XX:XX)。
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"instrument_type": "torque_stirrer", "readings": {"rotation_speed": 0, "torque": 0, "time": "00:00"}, "confidence": 0.95}
+{"rotation_speed": 0, "torque": 0, "time": "00:00"}
 
 注意：time字段保留MM:SS字符串格式；torque可能显示为00表示0N/cm。只输出一行JSON，数值不含单位。
 """,
 
-        "F7": """这是水浴锅，读取屏幕显示的温度(temperature,°C)和定时时间(time,min)。
+        "F7": """这是水浴锅（SN: 37844），读取屏幕显示的温度(temperature,°C)和定时时间(time,min)。
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"instrument_type": "temperature_controller", "readings": {"temperature": 0.0, "time": 0}, "confidence": 0.95}
+{"temperature": 0.0, "time": 0}
 
 注意：TEMP标签下方为温度（通常带1位小数，LED数码管小数点很小，如"17.3"），TIME标签下方为时间（整数分钟）。只输出一行JSON，数值不含单位。
 """,
 
-        "F8": """这是6速旋转粘度计，读取屏幕上的八个数值：实施读数(actual_reading)、最大读数(max_reading)、最小读数(min_reading)、转速(rotation_speed,RPM)、剪切速率(shear_rate,S-1)、剪切应力(shear_stress,Pa)、表观粘度(apparent_viscosity,mpa.s)、5秒平均值(avg_5s,mpa.s)。
+        "F8": """这是6速旋转粘度计（SN: 106833），读取屏幕上的八个数值：实施读数(actual_reading)、最大读数(max_reading)、最小读数(min_reading)、转速(rotation_speed,RPM)、剪切速率(shear_rate,S-1)、剪切应力(shear_stress,Pa)、表观粘度(apparent_viscosity,mpa.s)、5秒平均值(avg_5s,mpa.s)。
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"instrument_type": "viscometer_6speed", "readings": {"actual_reading": 0, "max_reading": 0, "min_reading": 0, "rotation_speed": 0, "shear_rate": 0, "shear_stress": 0.000, "apparent_viscosity": 0.0, "avg_5s": 0.0}, "confidence": 0.95}
+{"actual_reading": 0, "max_reading": 0, "min_reading": 0, "rotation_speed": 0, "shear_rate": 0, "shear_stress": 0.000, "apparent_viscosity": 0.0, "avg_5s": 0.0}
 
 只输出一行JSON，数值不含单位，无法读取设为null。
 """,
@@ -223,21 +244,41 @@ class InstrumentLibrary:
         return cls.CAMERA_PROMPTS.get(camera_name.upper(), "")
 
     @classmethod
+    def get_instrument_type_from_camera(cls, camera_name: str, parsed: dict) -> str:
+        """根据相机名和解析结果推断仪器类型（用于平铺JSON响应）"""
+        static_map = {
+            "F1": "electronic_balance",
+            "F2": "electronic_balance",
+            "F3": "ph_meter",
+            "F4": "water_quality_meter",
+            "F5": "surface_tension_meter",
+            "F6": "torque_stirrer",
+            "F7": "temperature_controller",
+            "F8": "viscometer_6speed",
+        }
+        if camera_name in static_map:
+            return static_map[camera_name]
+        if camera_name == "F0":
+            mode = parsed.get("mode", "auto")
+            return "wuying_mixer_auto" if mode == "auto" else "wuying_mixer_manual"
+        return camera_name.lower()
+
+    @classmethod
     def get_instrument_prompt(cls, instrument_type: str) -> str:
-        """获取特定仪器的读取prompt（简洁版，适配4B小模型）"""
+        """获取特定仪器的读取prompt（平铺JSON格式）"""
         prompts = {
             "electronic_balance": """这是电子天平，读取屏幕显示的重量数值。
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"instrument_type": "electronic_balance", "readings": {"weight": 0.00}, "confidence": 0.95}
+{"weight": 0.00}
 
-注意：仔细辨认小数点位置（LED数码管上小数点很小），数值单位为g。只输出一行JSON，数值不含单位。
+注意：仔细辨认小数点位置（LED数码管上小数点很小），数值单位为g，只输出纯数字不含单位。
 """,
 
             "ph_meter": """这是PH仪，读取屏幕上的三个数值：pH值(ph_value)、温度(temperature,°C)、PTS值(pts,%PTS)。
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"instrument_type": "ph_meter", "readings": {"ph_value": 0.00, "temperature": 0.0, "pts": 0.0}, "confidence": 0.95}
+{"ph_value": 0.00, "temperature": 0.0, "pts": 0.0}
 
 注意：pH值通常带2位小数，温度带1位小数，PTS通常为100.0。只输出一行JSON，数值不含单位，无法读取设为null。
 """,
@@ -247,8 +288,7 @@ class InstrumentLibrary:
 字段：seg1_speed(段一转速,转)、seg1_time(段一时间,S)、seg2_speed(段二转速,转)、seg2_time(段二时间,S)、seg3_speed(段三转速,转)、seg3_time(段三时间,S)、total_time(总时长,S)、remaining_time(剩余时长,S)、current_segment(当前段数)、current_speed(当前转速,转)
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-
-{"instrument_type": "wuying_mixer_auto", "readings": {"seg1_speed": 0, "seg1_time": 0, "seg2_speed": 0, "seg2_time": 0, "seg3_speed": 0, "seg3_time": 0, "total_time": 0, "remaining_time": 0, "current_segment": 0, "current_speed": 0}, "confidence": 0.95}
+{"mode": "auto", "seg1_speed": 0, "seg1_time": 0, "seg2_speed": 0, "seg2_time": 0, "seg3_speed": 0, "seg3_time": 0, "total_time": 0, "remaining_time": 0, "current_segment": 0, "current_speed": 0}
 
 只输出一行JSON，数值为纯数字不含单位，无法读取的值设为null。
 """,
@@ -261,8 +301,7 @@ class InstrumentLibrary:
 表格下方还有：remaining_time(剩余时间,S)、current_speed(当前转速,转)
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-
-{"instrument_type": "wuying_mixer_manual", "readings": {"high_speed": 0, "high_time": 0, "low_speed": 0, "low_time": 0, "remaining_time": 0, "current_speed": 0}, "confidence": 0.95}
+{"mode": "manual", "high_speed": 0, "high_time": 0, "low_speed": 0, "low_time": 0, "remaining_time": 0, "current_speed": 0}
 
 只输出一行JSON，数值为纯数字不含单位，无法读取的值设为null。
 """,
@@ -270,33 +309,42 @@ class InstrumentLibrary:
             "temperature_controller": """这是温度控制设备（水浴锅），读取屏幕显示的温度(temperature,°C)和定时时间(time,min)。
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"instrument_type": "temperature_controller", "readings": {"temperature": 0.0, "time": 0}, "confidence": 0.95}
+{"temperature": 0.0, "time": 0}
 
-注意：TEMP标签下方为温度（通常带1位小数，LED数码管小数点很小），TIME标签下方为时间（整数分钟）。只输出一行JSON，数值不含单位。
+注意：TEMP标签下方为温度，LED数码管小数点很小容易漏看，通常带1位小数（如显示"173"实为"17.3"）；TIME标签下方为时间（整数分钟）。只输出一行JSON，数值不含单位。
 """,
 
-            "water_quality_meter": """这是水质检测仪，检测总硬度。请先判断当前是高量程还是低量程模式，然后读取屏幕显示的所有数值。
+            "water_quality_meter": """这是水质检测仪，读取屏幕上所有数值。
 
-读数字段：检测日期(date)、空白值(blank_value)、检测值(test_value)、吸光度(absorbance)、含量mg/L(content_mg_l)、透光度%(transmittance)、当前量程模式(mode)
+读数字段：检测项目(test_item)、检测日期(date)、空白值(blank_value)、检测值(test_value)、吸光度(absorbance)、含量(content_mg_l)、透光度(transmittance)
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"instrument_type": "water_quality_meter", "readings": {"date": "", "blank_value": 0, "test_value": 0, "absorbance": 0.000, "content_mg_l": 0.00, "transmittance": 0.0, "mode": "high"}, "confidence": 0.95}
+{"test_item": "", "date": "", "blank_value": 0, "test_value": 0, "absorbance": 0.000, "content_mg_l": 0.00, "transmittance": 0.0}
 
-注意：date字段为字符串（格式xxxx-xx-xx xx:xx:xx），mode字段为"high"或"low"，其他字段为数值，无法读取设为null。只输出一行JSON。
+注意：test_item为检测项目名称字符串，date为字符串（格式xxxx-xx-xx xx:xx:xx），content_mg_l只填数字不含"mg/L"，transmittance只填数字不含"%"，无法读取设为null。只输出一行JSON。
 """,
 
-            "surface_tension_meter": """这是表界面张力仪，读取屏幕上的数值：张力(tension,mN/m)、温度(temperature,°C)、上层密度(upper_density,g/cm3)、下层密度(lower_density,g/cm3)、上升速度(rise_speed,mm/min)、下降速度(fall_speed,mm/min)。
+            "surface_tension_meter": """这是表界面张力仪，读取屏幕右侧所有可见字段：
+
+字段说明（有则读取，无则设null）：
+- tension: 表/界面张力(mN/m)。这是测量值，前面的"-"是真实负号，必须保留，如"-0.710"读为-0.71
+- temperature: 温度(°C)，显示N/A则设null
+- upper_density: 上层密度(g/cm³)，部分模式下有此字段
+- lower_density: 下层密度(g/cm³)，部分模式下有此字段
+- rise_speed: 上升速度(mm/min)
+- fall_speed: 下降速度(mm/min)
+- f_value: F值，仅部分模式显示。F值是一个矩形框内的数字，框的左右两侧各有独立的"-"按钮和"+"按钮用于调节参数，这两个按钮不属于数值。F值本身永远是正数，直接读框内数字
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"instrument_type": "surface_tension_meter", "readings": {"tension": 0.000, "temperature": 0.0, "upper_density": 0.000, "lower_density": 0.000, "rise_speed": 0, "fall_speed": 0}, "confidence": 0.95}
+{"tension": 0.000, "temperature": null, "upper_density": null, "lower_density": null, "rise_speed": 0, "fall_speed": 0, "f_value": null}
 
-注意：张力通常带3位小数，可能为负数；温度若显示N/A则设为null。只输出一行JSON，数值不含单位。
+只输出一行JSON，数值不含单位，无此字段设null。
 """,
 
-            "torque_stirrer": """这是电动搅拌器，屏幕显示三行数值：第一行转速(rotation_speed,rpm)、第二行扭矩(torque,N/cm)、第三行时间(time)。
+            "torque_stirrer": """这是电动搅拌器，屏幕显示三行数值：第一行转速(rotation_speed,rpm)、第二行扭矩(torque,N/cm)、第三行时间(time,XX:XX)。
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"instrument_type": "torque_stirrer", "readings": {"rotation_speed": 0, "torque": 0, "time": "00:00"}, "confidence": 0.95}
+{"rotation_speed": 0, "torque": 0, "time": "00:00"}
 
 注意：time字段保留MM:SS字符串格式；torque可能显示为00表示0N/cm。只输出一行JSON，数值不含单位。
 """,
@@ -304,7 +352,7 @@ class InstrumentLibrary:
             "viscometer_6speed": """这是6速旋转粘度计，读取屏幕上的八个数值：实施读数(actual_reading)、最大读数(max_reading)、最小读数(min_reading)、转速(rotation_speed,RPM)、剪切速率(shear_rate,S-1)、剪切应力(shear_stress,Pa)、表观粘度(apparent_viscosity,mpa.s)、5秒平均值(avg_5s,mpa.s)。
 
 【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"instrument_type": "viscometer_6speed", "readings": {"actual_reading": 0, "max_reading": 0, "min_reading": 0, "rotation_speed": 0, "shear_rate": 0, "shear_stress": 0.000, "apparent_viscosity": 0.0, "avg_5s": 0.0}, "confidence": 0.95}
+{"actual_reading": 0, "max_reading": 0, "min_reading": 0, "rotation_speed": 0, "shear_rate": 0, "shear_stress": 0.000, "apparent_viscosity": 0.0, "avg_5s": 0.0}
 
 只输出一行JSON，数值不含单位，无法读取设为null。
 """,
@@ -314,17 +362,17 @@ class InstrumentLibrary:
     @classmethod
     def identify_instrument_prompt(cls) -> str:
         """获取仪器类型识别的prompt（仅限相机对应的9种仪器）"""
-        prompt = """识别图片中的仪器类型，从以下选项中选择最匹配的一个：
+        prompt = """识别图片中的仪器类型，按以下优先顺序判断：
 
-- electronic_balance: 电子天平/分析天平 - 读取屏幕显示的重量数值(g)
-- ph_meter: pH计/酸度计 - 读取pH值、温度(°C)、PTS值
-- wuying_mixer_auto: 超级吴英混调器（自动模式）- 屏幕显示段一/段二/段三的转速和时间
-- wuying_mixer_manual: 超级吴英混调器（手动模式）- 屏幕显示高速/低速的转速和时间
-- temperature_controller: 温度控制设备(水浴锅等) - 显示温度(°C)和定时时间(min)
-- water_quality_meter: 水质检测仪 - 检测总硬度，显示日期、空白值、检测值、吸光度、含量、透光度
-- surface_tension_meter: 表界面张力仪 - 显示张力、温度、密度、升降速度
-- torque_stirrer: 扭矩搅拌器 - 显示rpm转速、N.cm扭矩、时间
-- viscometer_6speed: 6速旋转粘度计 - 显示实施读数、最大/最小读数、转速、剪切速率、剪切应力、表观粘度
+1. water_quality_meter: 屏幕出现"空白值"、"检测值"、"吸光度"、"透光度"任意字样 → 优先选此项
+2. wuying_mixer_auto: 中间表格有"段一"、"段二"、"段三"三行（只看表格行标签，不看左侧菜单）
+3. wuying_mixer_manual: 中间表格有"高速"、"低速"两行（只看表格行标签，不看左侧菜单）
+4. ph_meter: 屏幕显示pH值、PTS字样
+5. temperature_controller: 屏幕有TEMP和TIME两个标签
+6. surface_tension_meter: 显示张力(mN/m)、密度(g/cm³)、升降速度
+7. torque_stirrer: 显示rpm转速、N.cm扭矩
+8. viscometer_6speed: 显示剪切速率、表观粘度
+9. electronic_balance: LED数码管显示重量(g)
 
 【重要】你必须严格按照以下JSON格式输出，不要输出任何其他内容（不要分析、不要解释、不要思考过程）：
 
@@ -378,18 +426,13 @@ class MultimodalModelReader:
             call_type: 调用类型（identify/read），用于保存调试文件
         """
         try:
-            # 读取图片，非 JPEG/PNG 格式（如 BMP）先转换为 JPEG
-            suffix = Path(image_path).suffix.lower()
-            if suffix not in ('.jpg', '.jpeg', '.png'):
-                from PIL import Image
-                import io
-                img = Image.open(image_path).convert("RGB")
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=95)
-                image_data = buf.getvalue()
-            else:
-                with open(image_path, "rb") as f:
-                    image_data = f.read()
+            # 读取图片，统一转为 RGB JPEG 发送（兼容灰度图、BMP 等格式）
+            from PIL import Image
+            import io
+            img = Image.open(image_path).convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=95)
+            image_data = buf.getvalue()
             base64_image = base64.b64encode(image_data).decode('utf-8')
 
             # 调用 LLM Provider
@@ -523,13 +566,36 @@ class MultimodalModelReader:
             logger.warning("保存调试JSON失败: %s", e)
 
     def identify_instrument(self, image_path: str) -> Dict[str, Any]:
-        """识别仪器类型"""
+        """识别仪器类型，对易混淆的类型做二次确认"""
         prompt = InstrumentLibrary.identify_instrument_prompt()
-        return self.analyze_image(image_path, prompt, call_type="identify")
+        result = self.analyze_image(image_path, prompt, call_type="identify")
 
-    def read_instrument(self, image_path: str, instrument_type: str) -> Dict[str, Any]:
+        if "error" in result:
+            return result
+
+        # wuying_mixer_auto/manual 容易混淆，再跑一次取多数票
+        instrument_type = result.get("instrument_type", "")
+        if instrument_type in ("wuying_mixer_auto", "wuying_mixer_manual"):
+            result2 = self.analyze_image(image_path, prompt, call_type="identify")
+            type2 = result2.get("instrument_type", "")
+            if type2 != instrument_type and type2 in ("wuying_mixer_auto", "wuying_mixer_manual"):
+                # 两次结果不一致，再跑第三次决定
+                result3 = self.analyze_image(image_path, prompt, call_type="identify")
+                type3 = result3.get("instrument_type", "")
+                # 三次取多数
+                votes = [instrument_type, type2, type3]
+                final_type = max(set(votes), key=votes.count)
+                if final_type != instrument_type:
+                    logger.info("identify 多数票修正: %s → %s (votes: %s)", instrument_type, final_type, votes)
+                    result["instrument_type"] = final_type
+
+        return result
+
+    def read_instrument(self, image_path: str, instrument_type: str, ocr_text: str = None) -> Dict[str, Any]:
         """读取仪器数值"""
         prompt = InstrumentLibrary.get_instrument_prompt(instrument_type)
+        if ocr_text:
+            prompt = f"【OCR识别文字参考】\n{ocr_text}\n\n{prompt}"
         return self.analyze_image(image_path, prompt, call_type="read")
 
 
@@ -616,9 +682,9 @@ class InstrumentReader:
         if "error" in parsed:
             return {"success": False, "error": f"数值读取失败: {parsed['error']}"}
 
-        instrument_type = parsed.get("instrument_type", camera_name.lower())
+        instrument_type = InstrumentLibrary.get_instrument_type_from_camera(camera_name, parsed)
         instrument_name = InstrumentLibrary.CAMERA_INSTRUMENT_NAMES.get(camera_name, camera_name)
-        readings = parsed.get("readings", {})
+        readings = parsed  # 平铺JSON直接作为readings
 
         result = {
             "success": True,
@@ -627,7 +693,7 @@ class InstrumentReader:
             "camera_name": camera_name,
             "type_confidence": 1.0,
             "readings": readings,
-            "confidence": parsed.get("confidence", 0.9),
+            "confidence": 0.9,
             "method": "camera_direct",
         }
 
@@ -637,25 +703,66 @@ class InstrumentReader:
 
         return result
 
+    def _get_ocr_text(self, image_path: str) -> Optional[str]:
+        """调用 OCR 模型提取图片文字"""
+        try:
+            import httpx
+            from PIL import Image
+            import io as _io
+            img = Image.open(image_path).convert("RGB")
+            buf = _io.BytesIO()
+            img.save(buf, format="JPEG", quality=95)
+            img_b64 = base64.b64encode(buf.getvalue()).decode()
+            r = httpx.post(
+                f"{Config.LMSTUDIO_BASE_URL}/v1/chat/completions",
+                json={
+                    "model": Config.LMSTUDIO_OCR_MODEL,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": "识别图片中所有文字，原样输出，不要解释。"},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                    ]}],
+                    "max_tokens": 500,
+                    "temperature": 0.0,
+                },
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.warning("OCR提取失败: %s", e)
+            return None
+
     def _read_by_identification(self, image_path: str) -> Dict[str, Any]:
-        """两步识别流程：先识别仪器类型，再读取数值"""
-        # 步骤1: 识别仪器类型
-        logger.info("步骤1: 使用多模态模型识别仪器类型...")
-        identification = self.mm_reader.identify_instrument(image_path)
+        """两步识别流程：OCR关键词识别（默认）→ 读数；失败则退回LLM识别"""
+        # 步骤1: OCR提取文字 + 关键词识别
+        logger.info("步骤1: OCR提取文字识别仪器类型...")
+        ocr_text = self._get_ocr_text(image_path)
+        instrument_type = "unknown"
+        type_confidence = 0.0
+        method = "multimodal"
 
-        if "error" in identification:
-            return {
-                "success": False,
-                "error": f"仪器类型识别失败: {identification['error']}"
-            }
+        if ocr_text:
+            instrument_type = InstrumentLibrary.identify_by_ocr_keywords(ocr_text)
+            logger.info("OCR关键词识别: %s", instrument_type)
 
-        instrument_type = identification.get("instrument_type", "unknown")
-        type_confidence = identification.get("confidence", 0)
+        if instrument_type == "unknown":
+            # Fallback: LLM识别
+            logger.info("OCR识别未匹配，退回LLM识别...")
+            identification = self.mm_reader.identify_instrument(image_path)
+            if "error" in identification:
+                return {"success": False, "error": f"仪器类型识别失败: {identification['error']}"}
+            instrument_type = identification.get("instrument_type", "unknown")
+            type_confidence = identification.get("confidence", 0)
+            ocr_text = None  # LLM识别时不传OCR文字
+            method = "multimodal_identify"
+        else:
+            type_confidence = 1.0
+
         logger.info("识别结果: %s (置信度: %s)", instrument_type, type_confidence)
 
-        # 步骤2: 读取数值
+        # 步骤2: 读取数值（OCR文字作为prompt辅助）
         logger.info("步骤2: 使用多模态模型读取数值...")
-        mm_readings = self.mm_reader.read_instrument(image_path, instrument_type)
+        mm_readings = self.mm_reader.read_instrument(image_path, instrument_type, ocr_text=ocr_text)
 
         if "error" in mm_readings:
             return {
@@ -663,15 +770,28 @@ class InstrumentReader:
                 "error": f"数值读取失败: {mm_readings['error']}"
             }
 
+        # 后处理：修正已知的模型读数偏差
+        if instrument_type == "surface_tension_meter":
+            if mm_readings.get("f_value") is not None:
+                try:
+                    mm_readings["f_value"] = abs(float(str(mm_readings["f_value"]).replace(" ", "")))
+                except (ValueError, TypeError):
+                    pass
+            if mm_readings.get("tension") is not None:
+                try:
+                    mm_readings["tension"] = float(str(mm_readings["tension"]))
+                except (ValueError, TypeError):
+                    pass
+
         instrument_info = InstrumentLibrary.INSTRUMENTS.get(instrument_type, {})
         result = {
             "success": True,
             "instrument_type": instrument_type,
             "instrument_name": instrument_info.get("name", "未知仪器"),
             "type_confidence": type_confidence,
-            "readings": mm_readings.get("readings", {}),
-            "confidence": mm_readings.get("confidence", 0.9),
-            "method": "multimodal"
+            "readings": mm_readings,  # 平铺JSON直接作为readings
+            "confidence": 0.9,
+            "method": method,
         }
 
         if result["readings"]:

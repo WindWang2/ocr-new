@@ -24,12 +24,13 @@ class Config:
 
     # LMStudio 配置（OpenAI 兼容 API）
     LMSTUDIO_BASE_URL = _env("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234")
-    LMSTUDIO_MODEL = _env("LMSTUDIO_MODEL", "4b")
+    LMSTUDIO_MODEL = _env("LMSTUDIO_MODEL", "2b-new")
+    LMSTUDIO_OCR_MODEL = _env("LMSTUDIO_OCR_MODEL", "ocr")
     DEFAULT_LLM_PROVIDER = _env("DEFAULT_LLM_PROVIDER", "openai_compatible")
 
     # 模型推理参数
     MODEL_TEMPERATURE = _env("MODEL_TEMPERATURE", 0.1, float)
-    MODEL_MAX_TOKENS = _env("MODEL_MAX_TOKENS", 2000, int)
+    MODEL_MAX_TOKENS = _env("MODEL_MAX_TOKENS", 4000, int)
 
     # 图片格式
     IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp', '.JPG', '.JPEG', '.PNG', '.BMP']
