@@ -180,7 +180,7 @@ export const EXPERIMENT_SCHEMAS: Record<ExperimentType, ExperimentSchema> = {
       { fieldKey: 'F4', label: 'F4 · 水质检测仪',   unit: '', maxReadings: 99, defaultCameraId: 4, readingKey: 'test_value' },
       { fieldKey: 'F5', label: 'F5 · 表界面张力仪', unit: 'mN/m', maxReadings: 99, defaultCameraId: 5, readingKey: 'tension' },
       { fieldKey: 'F6', label: 'F6 · 扭矩搅拌器',  unit: '', maxReadings: 99, defaultCameraId: 6, readingKey: 'rotation_speed' },
-      { fieldKey: 'F7', label: 'F7 · 水浴锅',       unit: '°C', maxReadings: 99, defaultCameraId: 7, readingKey: 'temperature' },
+      { fieldKey: 'F7', label: 'F7 · 水浴锅',       unit: '°C', maxReadings: 99, defaultCameraId: 7, readingKey: 'time' },
       { fieldKey: 'F8', label: 'F8 · 6速粘度计',   unit: '', maxReadings: 99, defaultCameraId: 8, readingKey: 'actual_reading' },
     ],
   },
