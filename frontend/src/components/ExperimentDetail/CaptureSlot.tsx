@@ -2,11 +2,13 @@
 /**
  * CaptureSlot — 单个读数槽位
  *
- * 每个槽位始终显示一个可编辑的输入框（填空），支持两种方式写入值：
+ * 每个槽位始终显示可编辑输入框（填空），支持两种写入方式：
  *   A. 拍照识别：captureImage → 显示图片 → runTestCapture OCR → 自动填入读数
  *   B. 手动填写：直接在输入框输入数值，失焦或回车保存
  *
- * 图片消失问题修复：先 await 父组件刷新（reading prop 更新），再清除 pendingImage。
+ * 图片消失问题修复：
+ *   用 useEffect 监听 reading prop 变化，当 reading.image_path 更新后
+ *   才清除 pendingImage，避免两次 setState 之间的空窗期。
  */
 import { useState, useEffect } from 'react'
 import { Reading } from '@/types'
@@ -35,13 +37,19 @@ export default function CaptureSlot({
   const [pendingImage, setPendingImage] = useState<string | null>(null)
   const [phase, setPhase] = useState<'idle' | 'capturing' | 'recognizing'>('idle')
   const [error, setError] = useState<string | null>(null)
-  // 输入框的当前文本（跟随 reading 更新，也允许用户直接编辑）
   const [inputVal, setInputVal] = useState(reading ? String(reading.value) : '')
   const [saving, setSaving] = useState(false)
 
-  // 当 reading 从外部更新时（OCR/刷新后），同步输入框
+  // reading 更新时同步输入框文字
   useEffect(() => {
     if (reading != null) setInputVal(String(reading.value))
+  }, [reading])
+
+  // 等 reading.image_path 到位后再清除 pendingImage，避免图片闪消
+  useEffect(() => {
+    if (reading?.image_path && pendingImage) {
+      setPendingImage(null)
+    }
   }, [reading])
 
   const isBusy = phase !== 'idle'
@@ -56,10 +64,8 @@ export default function CaptureSlot({
 
       setPhase('recognizing')
       await runTestCapture(experimentId, fieldKey, cameraId, image_path)
-
-      // 先等父组件刷新（reading prop 拿到新值），再清除 pendingImage，避免图片闪消
+      // 触发父组件刷新；pendingImage 由 useEffect 在 reading prop 更新后清除
       await onComplete()
-      setPendingImage(null)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '拍照失败')
       setPendingImage(null)
@@ -71,9 +77,9 @@ export default function CaptureSlot({
   const handleInputBlur = async () => {
     const num = parseFloat(inputVal)
     if (isNaN(num)) return
-    // 值没变则不请求
     if (reading && reading.value === num) return
     setSaving(true)
+    setError(null)
     try {
       await saveManualReading(experimentId, fieldKey, slotIndex, num, cameraId)
       await onComplete()
@@ -88,7 +94,7 @@ export default function CaptureSlot({
     if (e.key === 'Enter') e.currentTarget.blur()
   }
 
-  // 显示图片：优先 pending（拍照中/识别中），其次已保存的
+  // 显示图片：识别过程中用 pendingImage，完成后用 reading.image_path
   const displayImage = pendingImage ?? reading?.image_path ?? null
 
   // ── 输入框（所有模式共用）────────────────────────────────────────────────
@@ -101,12 +107,8 @@ export default function CaptureSlot({
         onBlur={handleInputBlur}
         onKeyDown={handleInputKey}
         disabled={saving}
-        placeholder="—"
-        className={`w-24 px-2 py-1 text-sm font-semibold tabular-nums border rounded-lg focus:outline-none focus:ring-1 transition ${
-          saving
-            ? 'bg-gray-50 text-gray-400 border-gray-200'
-            : 'bg-white border-gray-200 text-gray-800 focus:border-brand-400 focus:ring-brand-200 hover:border-gray-300'
-        }`}
+        placeholder="填写读数"
+        className="w-28 px-2.5 py-1.5 text-sm font-semibold tabular-nums border-2 border-dashed border-gray-300 rounded-lg bg-white focus:outline-none focus:border-brand-400 focus:border-solid focus:ring-1 focus:ring-brand-200 hover:border-gray-400 transition placeholder:text-gray-300 placeholder:font-normal disabled:opacity-50"
       />
       <span className="text-xs text-gray-400 shrink-0">{unit}</span>
       {saving && <RefreshCw size={11} className="animate-spin text-gray-400" />}
@@ -147,10 +149,8 @@ export default function CaptureSlot({
             {cameraLabel && <span className="text-[10px] text-gray-300">{cameraLabel}</span>}
           </div>
 
-          {/* 输入框 */}
           {inputBox}
 
-          {/* 拍照按钮 */}
           <button
             onClick={handleCapture}
             disabled={isBusy || disabled}
@@ -198,23 +198,21 @@ export default function CaptureSlot({
 
         {/* 右侧：信息 + 输入框 + 按钮 */}
         <div className="flex-1 min-w-0 flex flex-col justify-between h-36">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
               <span className="font-semibold text-gray-700 text-sm">{label}</span>
-              {cameraLabel && (
-                <span className="text-[11px] text-gray-400">{cameraLabel}</span>
-              )}
+              {cameraLabel && <span className="text-[11px] text-gray-400">{cameraLabel}</span>}
             </div>
             {reading?.timestamp && (
-              <div className="text-[11px] text-gray-300 mb-2">
+              <div className="text-[11px] text-gray-300">
                 {new Date(reading.timestamp).toLocaleString('zh-CN', {
                   month: '2-digit', day: '2-digit',
                   hour: '2-digit', minute: '2-digit', second: '2-digit',
                 })}
               </div>
             )}
-            {/* 读数输入框（始终可见） */}
-            <div className="mt-1">{inputBox}</div>
+            {/* 读数输入框（始终可编辑） */}
+            <div className="pt-1">{inputBox}</div>
           </div>
 
           <div className="flex items-center gap-2 justify-end">
