@@ -2,13 +2,13 @@
 /**
  * CaptureSlot — 单个读数槽位
  *
- * 每个槽位始终显示可编辑输入框（填空），支持两种写入方式：
- *   A. 拍照识别：captureImage → 显示图片 → runTestCapture OCR → 自动填入读数
+ * 每个槽位始终显示可编辑输入框，支持：
+ *   A. 拍照识别：captureImage → 显示图片 → runTestCapture(readingKey) → 自动填入主读数
+ *      图片下方展示该仪器所有 OCR 读数（all_ocr）
  *   B. 手动填写：直接在输入框输入数值，失焦或回车保存
  *
- * 图片消失问题修复：
- *   用 useEffect 监听 reading prop 变化，当 reading.image_path 更新后
- *   才清除 pendingImage，避免两次 setState 之间的空窗期。
+ * run_index 与 slotIndex 严格对应（0-based），避免索引错位。
+ * pendingImage 由 useEffect 监听 reading.image_path 更新后清除，不会有空窗期。
  */
 import { useState, useEffect } from 'react'
 import { Reading } from '@/types'
@@ -19,7 +19,8 @@ interface Props {
   experimentId: number
   fieldKey: string
   cameraId: number
-  slotIndex: number
+  slotIndex: number     // 0-based，对应 run_index
+  readingKey: string    // 仪器 OCR 结果中对应此槽位的键，如 "actual_reading"、"tension"
   label: string
   unit: string
   reading: Reading | null
@@ -30,7 +31,7 @@ interface Props {
 }
 
 export default function CaptureSlot({
-  experimentId, fieldKey, cameraId, slotIndex,
+  experimentId, fieldKey, cameraId, slotIndex, readingKey,
   label, unit, reading, onComplete, disabled = false,
   cameraLabel, compact = false,
 }: Props) {
@@ -39,13 +40,14 @@ export default function CaptureSlot({
   const [error, setError] = useState<string | null>(null)
   const [inputVal, setInputVal] = useState(reading ? String(reading.value) : '')
   const [saving, setSaving] = useState(false)
+  // 所有 OCR 读数（仪器原始键值对），展示在图片下方
+  const [allOcr, setAllOcr] = useState<Record<string, number | string | null> | null>(null)
 
-  // reading 更新时同步输入框文字
   useEffect(() => {
     if (reading != null) setInputVal(String(reading.value))
   }, [reading])
 
-  // 等 reading.image_path 到位后再清除 pendingImage，避免图片闪消
+  // reading.image_path 到位后清除 pendingImage，避免图片空窗期
   useEffect(() => {
     if (reading?.image_path && pendingImage) {
       setPendingImage(null)
@@ -57,14 +59,17 @@ export default function CaptureSlot({
   const handleCapture = async () => {
     if (isBusy || disabled) return
     setError(null)
+    setAllOcr(null)
     try {
       setPhase('capturing')
       const { image_path } = await captureImage(experimentId, cameraId)
       if (image_path) setPendingImage(image_path)
 
       setPhase('recognizing')
-      await runTestCapture(experimentId, fieldKey, cameraId, image_path)
-      // 触发父组件刷新；pendingImage 由 useEffect 在 reading prop 更新后清除
+      const result = await runTestCapture(
+        experimentId, fieldKey, cameraId, image_path, readingKey, slotIndex
+      )
+      if (result.all_ocr) setAllOcr(result.all_ocr)
       await onComplete()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '拍照失败')
@@ -94,10 +99,13 @@ export default function CaptureSlot({
     if (e.key === 'Enter') e.currentTarget.blur()
   }
 
-  // 显示图片：识别过程中用 pendingImage，完成后用 reading.image_path
   const displayImage = pendingImage ?? reading?.image_path ?? null
 
-  // ── 输入框（所有模式共用）────────────────────────────────────────────────
+  // 所有 OCR 读数展示（只显示数值型字段，跳过 mode/date 等字符串）
+  const ocrEntries = allOcr
+    ? Object.entries(allOcr).filter(([, v]) => v !== null && typeof v === 'number')
+    : []
+
   const inputBox = (
     <div className="flex items-center gap-1.5">
       <input
@@ -116,17 +124,12 @@ export default function CaptureSlot({
   )
 
   if (compact) {
-    // ── 紧凑模式：表观黏度 3列网格 ──────────────────────────────────────────
     return (
       <div className="flex flex-col border border-gray-100 rounded-xl overflow-hidden bg-white">
         {/* 图片区 */}
         <div className="relative bg-gray-50 h-28">
           {displayImage ? (
-            <img
-              src={`/images/${displayImage}`}
-              alt={label}
-              className="w-full h-full object-cover"
-            />
+            <img src={`/images/${displayImage}`} alt={label} className="w-full h-full object-cover" />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
               <Camera size={20} className="text-gray-200" />
@@ -142,15 +145,24 @@ export default function CaptureSlot({
           )}
         </div>
 
+        {/* OCR 所有读数（图片下方） */}
+        {ocrEntries.length > 0 && (
+          <div className="px-2.5 pt-1.5 flex flex-wrap gap-x-2 gap-y-0.5">
+            {ocrEntries.map(([k, v]) => (
+              <span key={k} className={`text-[10px] ${k === readingKey ? 'text-brand-600 font-semibold' : 'text-gray-400'}`}>
+                {k}: {String(v)}
+              </span>
+            ))}
+          </div>
+        )}
+
         {/* 底部 */}
         <div className="px-2.5 py-2 flex flex-col gap-1.5">
           <div className="flex items-center justify-between">
             <span className="text-[11px] text-gray-400">{label}</span>
             {cameraLabel && <span className="text-[10px] text-gray-300">{cameraLabel}</span>}
           </div>
-
           {inputBox}
-
           <button
             onClick={handleCapture}
             disabled={isBusy || disabled}
@@ -162,41 +174,49 @@ export default function CaptureSlot({
             {isBusy ? <RefreshCw size={11} className="animate-spin" /> : <Camera size={11} />}
             {phase === 'capturing' ? '拍摄中' : phase === 'recognizing' ? '识别中' : '拍照识别'}
           </button>
-
           {error && <p className="text-[10px] text-red-500 truncate" title={error}>{error}</p>}
         </div>
       </div>
     )
   }
 
-  // ── 标准模式：运动粘度、表面张力列表槽位 ─────────────────────────────────
+  // ── 标准模式 ────────────────────────────────────────────────────────────────
   return (
     <div className="border border-gray-100 rounded-xl bg-white overflow-hidden hover:shadow-sm transition-shadow">
       <div className="flex items-start gap-4 p-4">
         {/* 左侧：图片 */}
-        <div className="relative shrink-0 w-48 h-36 rounded-lg overflow-hidden bg-gray-50 border border-gray-100">
-          {displayImage ? (
-            <img
-              src={`/images/${displayImage}`}
-              alt={label}
-              className="w-full h-full object-cover"
-            />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center">
-              <Camera size={24} className="text-gray-200" />
-            </div>
-          )}
-          {isBusy && (
-            <div className="absolute inset-0 bg-white/75 flex flex-col items-center justify-center gap-1.5">
-              <RefreshCw size={18} className="animate-spin text-brand-500" />
-              <span className="text-xs text-brand-500">
-                {phase === 'capturing' ? '正在拍摄...' : '正在识别...'}
-              </span>
+        <div className="flex flex-col gap-2 shrink-0">
+          <div className="relative w-48 h-36 rounded-lg overflow-hidden bg-gray-50 border border-gray-100">
+            {displayImage ? (
+              <img src={`/images/${displayImage}`} alt={label} className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center">
+                <Camera size={24} className="text-gray-200" />
+              </div>
+            )}
+            {isBusy && (
+              <div className="absolute inset-0 bg-white/75 flex flex-col items-center justify-center gap-1.5">
+                <RefreshCw size={18} className="animate-spin text-brand-500" />
+                <span className="text-xs text-brand-500">
+                  {phase === 'capturing' ? '正在拍摄...' : '正在识别...'}
+                </span>
+              </div>
+            )}
+          </div>
+          {/* 图片下方：所有 OCR 读数 */}
+          {ocrEntries.length > 0 && (
+            <div className="w-48 bg-gray-50/80 rounded-lg px-2.5 py-2 border border-gray-100 space-y-0.5">
+              {ocrEntries.map(([k, v]) => (
+                <div key={k} className={`flex justify-between text-[11px] ${k === readingKey ? 'text-brand-600 font-semibold' : 'text-gray-500'}`}>
+                  <span>{k}</span>
+                  <span className="tabular-nums">{String(v)}</span>
+                </div>
+              ))}
             </div>
           )}
         </div>
 
-        {/* 右侧：信息 + 输入框 + 按钮 */}
+        {/* 右侧 */}
         <div className="flex-1 min-w-0 flex flex-col justify-between h-36">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
@@ -211,7 +231,6 @@ export default function CaptureSlot({
                 })}
               </div>
             )}
-            {/* 读数输入框（始终可编辑） */}
             <div className="pt-1">{inputBox}</div>
           </div>
 

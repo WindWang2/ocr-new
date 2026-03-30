@@ -88,6 +88,7 @@ export default function ApparentViscosity({ experiment, onRefresh }: ExperimentV
                     fieldKey={fieldKey}
                     cameraId={camId}
                     slotIndex={runIndex}
+                    readingKey={def.readingKey}
                     label={`实验${runIndex + 1}`}
                     unit={def.unit}
                     reading={getReading(fieldKey, runIndex)}

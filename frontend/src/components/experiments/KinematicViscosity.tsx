@@ -82,6 +82,7 @@ export default function KinematicViscosity({ experiment, onRefresh }: Experiment
               fieldKey={field.fieldKey}
               cameraId={cameraId}
               slotIndex={i}
+              readingKey={field.readingKey}
               label={`实验 ${i + 1}`}
               unit={field.unit}
               reading={getReading(i)}

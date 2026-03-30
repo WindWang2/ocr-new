@@ -74,6 +74,7 @@ export default function SurfaceTension({ experiment, onRefresh }: ExperimentView
           fieldKey="water_surface_tension"
           cameraId={getCameraId('water_surface_tension')}
           slotIndex={0}
+          readingKey="tension"
           label="测试值"
           unit="mN/m"
           reading={getReading('water_surface_tension', 0)}
@@ -96,6 +97,7 @@ export default function SurfaceTension({ experiment, onRefresh }: ExperimentView
               fieldKey="fluid_surface_tension"
               cameraId={getCameraId('fluid_surface_tension')}
               slotIndex={i}
+              readingKey="tension"
               label={`实验 ${i + 1}`}
               unit="mN/m"
               reading={getReading('fluid_surface_tension', i)}
@@ -125,6 +127,7 @@ export default function SurfaceTension({ experiment, onRefresh }: ExperimentView
               fieldKey="fluid_interface_tension"
               cameraId={getCameraId('fluid_interface_tension')}
               slotIndex={i}
+              readingKey="tension"
               label={`实验 ${i + 1}`}
               unit="mN/m"
               reading={getReading('fluid_interface_tension', i)}

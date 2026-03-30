@@ -125,15 +125,16 @@ export async function runTestCapture(
   fieldKey: string,
   cameraId: number,
   imagePath?: string,
-): Promise<{ success: boolean; readings?: Reading[]; detail?: string }> {
+  readingKey?: string,
+  runIndex?: number,
+): Promise<{ success: boolean; readings?: Reading[]; all_ocr?: Record<string, number | string | null>; detail?: string }> {
   const body: Record<string, unknown> = { field_key: fieldKey, camera_id: cameraId }
   if (imagePath) body.image_path = imagePath
-  const data = await request<{ success: boolean; readings?: Reading[]; detail?: string }>(
+  if (readingKey) body.reading_key = readingKey
+  if (runIndex !== undefined) body.run_index = runIndex
+  const data = await request<{ success: boolean; readings?: Reading[]; all_ocr?: Record<string, number | string | null>; detail?: string }>(
     `/experiments/${experimentId}/run-test`,
-    {
-      method: 'POST',
-      body: JSON.stringify(body),
-    },
+    { method: 'POST', body: JSON.stringify(body) },
   )
   if (!data.success) throw new Error(data.detail || '识别失败')
   return data

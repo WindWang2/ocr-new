@@ -334,6 +334,8 @@ class ExperimentRunTestBody(BaseModel):
     field_key: str
     camera_id: int
     image_path: Optional[str] = None
+    reading_key: Optional[str] = None   # 仪器读数键，如 "actual_reading"、"tension"
+    run_index: Optional[int] = None     # 槽位序号（0-based），不传则追加
 
 
 @app.post("/experiments/{exp_id}/run-test")
@@ -369,7 +371,7 @@ def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
     if not saved_image_path:
         return {"success": False, "detail": "无可用图片"}
 
-    # 对保存的图片做 OCR
+    # 对保存的图片做 OCR（_extract_camera_name 会从路径推断相机名，使用专用 prompt）
     full_image_path = str(_images_dir / saved_image_path)
     try:
         from instrument_reader import InstrumentReader
@@ -383,42 +385,85 @@ def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
     if not ocr_result.get("success"):
         return {"success": False, "detail": ocr_result.get("error", "OCR 识别失败")}
 
-    # 存储所有 OCR 读数
+    # 解析 OCR 返回的所有读数（仪器原始键值对）
     raw_response = ocr_result.get("readings", {})
     try:
-        readings_dict = json.loads(str(raw_response)) if raw_response else {}
+        readings_dict = json.loads(str(raw_response)) if isinstance(raw_response, str) else {}
     except (json.JSONDecodeError, TypeError):
+        readings_dict = {}
+    if not isinstance(readings_dict, dict):
         readings_dict = raw_response if isinstance(raw_response, dict) else {}
 
-    all_readings = []
-    for key, value in readings_dict.items():
-        try:
-            str_val = str(value).strip()
-            # time 字段可能是 "MM:SS" 格式，转为秒数（float）
-            if key == "time" and ":" in str_val:
-                parts = str_val.split(":")
-                if len(parts) == 2:
-                    float_val = float(parts[0]) * 60 + float(parts[1])
-                else:
-                    continue
-            else:
-                float_val = float(str_val)
-        except (ValueError, TypeError):
+    # 过滤掉非数值（如 mode、date 字符串字段），同时保留 "MM:SS" 时间格式
+    numeric_ocr: dict = {}
+    for k, v in readings_dict.items():
+        if v is None:
             continue
-        existing = [r for r in experiment["readings"] if r["field_key"] == key]
-        run_index = len(existing) + 1
-        reading = create_reading(
-            experiment_id=exp_id,
-            field_key=key,
-            camera_id=body.camera_id,
-            value=float_val,
-            run_index=run_index,
-            confidence=ocr_result.get("confidence"),
-            image_path=saved_image_path,
-        )
-        all_readings.append(reading)
+        str_val = str(v).strip()
+        if k == "time" and ":" in str_val:
+            parts = str_val.split(":")
+            if len(parts) == 2:
+                try:
+                    numeric_ocr[k] = float(parts[0]) * 60 + float(parts[1])
+                except ValueError:
+                    pass
+        else:
+            try:
+                numeric_ocr[k] = float(str_val)
+            except (ValueError, TypeError):
+                pass  # 跳过字符串字段（mode、date 等）
 
-    return {"success": True, "readings": all_readings}
+    if not numeric_ocr:
+        return {"success": False, "detail": "OCR 未识别到数值", "all_ocr": readings_dict}
+
+    # 确定主读数键：优先使用请求中传入的 reading_key，
+    # 其次查相机配置的 selected_readings[0]，最后取第一个数值字段
+    primary_key = body.reading_key
+    if not primary_key:
+        config = next(
+            (c for c in experiment["camera_configs"] if c["field_key"] == body.field_key),
+            None
+        )
+        selected = (config.get("selected_readings") or []) if config else []
+        primary_key = next((k for k in selected if k in numeric_ocr), None)
+    if not primary_key:
+        primary_key = next(iter(numeric_ocr), None)
+
+    primary_value = numeric_ocr.get(primary_key) if primary_key else None
+    if primary_value is None:
+        return {"success": False, "detail": f"未找到读数键 '{primary_key}'", "all_ocr": readings_dict}
+
+    # 确定 run_index：使用前端传入值（0-based），否则追加
+    if body.run_index is not None:
+        run_index = body.run_index
+    else:
+        existing = [r for r in experiment["readings"] if r["field_key"] == body.field_key]
+        run_index = len(existing)   # 0-based
+
+    # 保存主读数，field_key 使用实验字段名（不是仪器键名）
+    reading = upsert_reading(
+        experiment_id=exp_id,
+        field_key=body.field_key,
+        camera_id=body.camera_id,
+        value=primary_value,
+        run_index=run_index,
+    )
+    # 补充 image_path（upsert_reading 不更新 image_path，需额外更新）
+    if saved_image_path:
+        conn = get_connection()
+        conn.execute(
+            "UPDATE experiment_readings SET image_path=? WHERE id=?",
+            (saved_image_path, reading["id"])
+        )
+        conn.commit()
+        conn.close()
+        reading["image_path"] = saved_image_path
+
+    return {
+        "success": True,
+        "readings": [reading],
+        "all_ocr": readings_dict,   # 完整 OCR 结果，前端用于在图片下方展示所有读数
+    }
 
 
 @app.get("/config/camera-instruments")

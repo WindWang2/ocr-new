@@ -10,11 +10,12 @@ export interface ManualParamDef {
 
 export interface CameraFieldDef {
   fieldKey: string
-  label: string          // 字段显示名
-  unit: string           // 读数单位
-  maxReadings: number    // 最多读数次数（每次读数对应一个拍照槽位）
+  label: string           // 字段显示名
+  unit: string            // 读数单位
+  maxReadings: number     // 最多读数次数（每次读数对应一个拍照槽位）
   defaultCameraId: number // 预绑定相机（可在创建时修改）
-  description?: string   // 字段说明，用于UI提示
+  readingKey: string      // 仪器读数键：OCR 结果 JSON 中对应此字段的 key（如 "actual_reading"、"tension"）
+  description?: string    // 字段说明，用于UI提示
 }
 
 export interface ExperimentSchema {
@@ -54,6 +55,7 @@ export const EXPERIMENT_SCHEMAS: Record<ExperimentType, ExperimentSchema> = {
         unit: 's',
         maxReadings: 4,
         defaultCameraId: 7,
+        readingKey: 'time',       // F7 水浴锅返回: {temperature, time}
         description: '每次读数拍摄运动粘度测试仪显示的流经时间，共4次，误差 < 10s',
       },
     ],
@@ -81,6 +83,7 @@ export const EXPERIMENT_SCHEMAS: Record<ExperimentType, ExperimentSchema> = {
         unit: '',
         maxReadings: 2,
         defaultCameraId: 8,
+        readingKey: 'actual_reading', // F8 6速粘度计返回: {actual_reading, rotation_speed, ...}
         description: '将粘度计设置为 3rpm，拍摄屏幕读数',
       },
       {
@@ -89,6 +92,7 @@ export const EXPERIMENT_SCHEMAS: Record<ExperimentType, ExperimentSchema> = {
         unit: '',
         maxReadings: 2,
         defaultCameraId: 8,
+        readingKey: 'actual_reading',
         description: '将粘度计设置为 6rpm，拍摄屏幕读数',
       },
       {
@@ -97,6 +101,7 @@ export const EXPERIMENT_SCHEMAS: Record<ExperimentType, ExperimentSchema> = {
         unit: '',
         maxReadings: 2,
         defaultCameraId: 8,
+        readingKey: 'actual_reading',
         description: '将粘度计设置为 100rpm，拍摄屏幕读数，此值用于计算表观黏度',
       },
     ],
@@ -132,6 +137,7 @@ export const EXPERIMENT_SCHEMAS: Record<ExperimentType, ExperimentSchema> = {
         unit: 'mN/m',
         maxReadings: 1,
         defaultCameraId: 5,
+        readingKey: 'tension',   // F5 表界面张力仪返回: {tension, temperature, upper_density, ...}
         description: '测试前先测纯水表面张力，用于验证铂金环状态（标准值约72.8 mN/m @ 20℃）',
       },
       {
@@ -140,6 +146,7 @@ export const EXPERIMENT_SCHEMAS: Record<ExperimentType, ExperimentSchema> = {
         unit: 'mN/m',
         maxReadings: 5,
         defaultCameraId: 5,
+        readingKey: 'tension',
         description: '环法测表面张力，上层密度设为0，下层密度输入破胶液密度，共5次取算术平均',
       },
       {
@@ -148,6 +155,7 @@ export const EXPERIMENT_SCHEMAS: Record<ExperimentType, ExperimentSchema> = {
         unit: 'mN/m',
         maxReadings: 2,
         defaultCameraId: 5,
+        readingKey: 'tension',
         description: '环法测界面张力，上下层密度按实际值设置（破胶液/煤油），共2次取算术平均',
       },
     ],
@@ -165,15 +173,15 @@ export const EXPERIMENT_SCHEMAS: Record<ExperimentType, ExperimentSchema> = {
     icon: '📷',
     manualParams: [],
     cameraFields: [
-      { fieldKey: 'F0', label: 'F0 · 混调器',       unit: '', maxReadings: 99, defaultCameraId: 0 },
-      { fieldKey: 'F1', label: 'F1 · 电子天平1',    unit: '', maxReadings: 99, defaultCameraId: 1 },
-      { fieldKey: 'F2', label: 'F2 · 电子天平2',    unit: '', maxReadings: 99, defaultCameraId: 2 },
-      { fieldKey: 'F3', label: 'F3 · pH计',         unit: '', maxReadings: 99, defaultCameraId: 3 },
-      { fieldKey: 'F4', label: 'F4 · 水质检测仪',   unit: '', maxReadings: 99, defaultCameraId: 4 },
-      { fieldKey: 'F5', label: 'F5 · 表界面张力仪', unit: '', maxReadings: 99, defaultCameraId: 5 },
-      { fieldKey: 'F6', label: 'F6 · 扭矩搅拌器',  unit: '', maxReadings: 99, defaultCameraId: 6 },
-      { fieldKey: 'F7', label: 'F7 · 水浴锅',       unit: '', maxReadings: 99, defaultCameraId: 7 },
-      { fieldKey: 'F8', label: 'F8 · 6速粘度计',   unit: '', maxReadings: 99, defaultCameraId: 8 },
+      { fieldKey: 'F0', label: 'F0 · 混调器',       unit: '', maxReadings: 99, defaultCameraId: 0, readingKey: 'current_speed' },
+      { fieldKey: 'F1', label: 'F1 · 电子天平1',    unit: 'g', maxReadings: 99, defaultCameraId: 1, readingKey: 'weight' },
+      { fieldKey: 'F2', label: 'F2 · 电子天平2',    unit: 'g', maxReadings: 99, defaultCameraId: 2, readingKey: 'weight' },
+      { fieldKey: 'F3', label: 'F3 · pH计',         unit: '', maxReadings: 99, defaultCameraId: 3, readingKey: 'ph_value' },
+      { fieldKey: 'F4', label: 'F4 · 水质检测仪',   unit: '', maxReadings: 99, defaultCameraId: 4, readingKey: 'test_value' },
+      { fieldKey: 'F5', label: 'F5 · 表界面张力仪', unit: 'mN/m', maxReadings: 99, defaultCameraId: 5, readingKey: 'tension' },
+      { fieldKey: 'F6', label: 'F6 · 扭矩搅拌器',  unit: '', maxReadings: 99, defaultCameraId: 6, readingKey: 'rotation_speed' },
+      { fieldKey: 'F7', label: 'F7 · 水浴锅',       unit: '°C', maxReadings: 99, defaultCameraId: 7, readingKey: 'temperature' },
+      { fieldKey: 'F8', label: 'F8 · 6速粘度计',   unit: '', maxReadings: 99, defaultCameraId: 8, readingKey: 'actual_reading' },
     ],
   },
 }
