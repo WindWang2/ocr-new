@@ -42,11 +42,16 @@ export const EXPERIMENT_SCHEMAS: Record<ExperimentType, ExperimentSchema> = {
     icon: '🧪',
     standard: 'GB/T 265',
     manualParams: [
-      { key: 'temperature_set',  label: '温控设置温度', unit: '℃',      type: 'number', placeholder: '25' },
-      { key: 'temperature_max',  label: '最高温度',     unit: '℃',      type: 'number' },
-      { key: 'temperature_min',  label: '最低温度',     unit: '℃',      type: 'number' },
-      { key: 'capillary_model',  label: '毛细管粘度计型号', unit: '',    type: 'text',   placeholder: '如 0.8mm 品氏' },
-      { key: 'capillary_coeff',  label: '毛细管系数 C', unit: 'mm²/s²', type: 'number' },
+      { key: 'test_date',        label: '检测日期',         unit: '',       type: 'text',   placeholder: '如 2026-03-30' },
+      { key: 'sample_name',      label: '被检样品名称',     unit: '',       type: 'text' },
+      { key: 'sample_number',    label: '样品编号',         unit: '',       type: 'text' },
+      { key: 'report_number',    label: '报告编号 NO.',     unit: '',       type: 'text' },
+      { key: 'formula_description', label: '配方说明',      unit: '',       type: 'text',   placeholder: '如：0.1%减阻剂+200ppm水' },
+      { key: 'temperature_set',  label: '温控设置温度',     unit: '℃',     type: 'number', placeholder: '25' },
+      { key: 'temperature_max',  label: '最高温度',         unit: '℃',     type: 'number' },
+      { key: 'temperature_min',  label: '最低温度',         unit: '℃',     type: 'number' },
+      { key: 'capillary_model',  label: '毛细管粘度计型号', unit: '',       type: 'text',   placeholder: '如 0.8mm 品氏' },
+      { key: 'capillary_coeff',  label: '毛细管系数 C',     unit: 'mm²/s²', type: 'number' },
     ],
     cameraFields: [
       {
@@ -74,7 +79,13 @@ export const EXPERIMENT_SCHEMAS: Record<ExperimentType, ExperimentSchema> = {
     description: '6速旋转粘度计，分别读取3/6/100rpm读数，计算表观黏度 η = α × 5.077/1.704，做2次实验取平均',
     icon: '🔄',
     standard: 'WLD/CNAS-QP7080004',
-    manualParams: [],
+    manualParams: [
+      { key: 'test_date',        label: '检测日期',     unit: '', type: 'text', placeholder: '如 2026-03-30' },
+      { key: 'sample_name',      label: '被检样品名称', unit: '', type: 'text' },
+      { key: 'sample_number',    label: '样品编号',     unit: '', type: 'text' },
+      { key: 'report_number',    label: '编号 NO.',     unit: '', type: 'text' },
+      { key: 'formula_description', label: '配方说明',  unit: '', type: 'text', placeholder: '如：配方描述' },
+    ],
     cameraFields: [
       // 每个字段最多2次读数对应实验1、实验2；全部绑定 F8（6速旋转粘度计）
       {
@@ -124,10 +135,22 @@ export const EXPERIMENT_SCHEMAS: Record<ExperimentType, ExperimentSchema> = {
     icon: '💧',
     standard: 'SY/T 5370-2018',
     manualParams: [
-      { key: 'room_temperature', label: '室内温度',          unit: '℃',    type: 'number' },
-      { key: 'room_humidity',    label: '室内湿度',          unit: '%',    type: 'number' },
-      { key: 'sample_density',   label: '25℃ 破胶液密度',   unit: 'g/cm³', type: 'number', placeholder: '用于表面张力测试' },
-      { key: 'kerosene_density', label: '25℃ 煤油密度',     unit: 'g/cm³', type: 'number', placeholder: '用于界面张力测试' },
+      { key: 'test_date',        label: '检测日期',         unit: '',      type: 'text',   placeholder: '如 2026-03-30' },
+      { key: 'sample_name',      label: '被检样品名称',     unit: '',      type: 'text' },
+      { key: 'sample_number',    label: '样品编号',         unit: '',      type: 'text' },
+      { key: 'sample_state',     label: '样品状态',         unit: '',      type: 'text',   placeholder: '如：液态' },
+      { key: 'formula_number',   label: '配液编号',         unit: '',      type: 'text' },
+      { key: 'report_number',    label: '检测报告编号',     unit: '',      type: 'text' },
+      { key: 'formula_description', label: '配方说明',      unit: '',      type: 'text' },
+      { key: 'room_temperature', label: '室内温度',         unit: '℃',    type: 'number' },
+      { key: 'room_humidity',    label: '室内湿度',         unit: '%',     type: 'number' },
+      { key: 'sample_density',   label: '25℃ 破胶液密度',  unit: 'g/cm³', type: 'number', placeholder: '用于表面张力测试' },
+      { key: 'kerosene_density', label: '25℃ 煤油密度',    unit: 'g/cm³', type: 'number', placeholder: '用于界面张力测试' },
+      { key: 'remarks',          label: '备注',             unit: '',      type: 'text' },
+      { key: 'operator_name',    label: '检测人',           unit: '',      type: 'text' },
+      { key: 'operator_time',    label: '检测时间',         unit: '',      type: 'text' },
+      { key: 'reviewer_name',    label: '审核人',           unit: '',      type: 'text' },
+      { key: 'reviewer_date',    label: '审核日期',         unit: '',      type: 'text' },
     ],
     cameraFields: [
       // 全部绑定 F5（表界面张力仪）
@@ -180,7 +203,7 @@ export const EXPERIMENT_SCHEMAS: Record<ExperimentType, ExperimentSchema> = {
       { fieldKey: 'F4', label: 'F4 · 水质检测仪',   unit: '', maxReadings: 99, defaultCameraId: 4, readingKey: 'test_value' },
       { fieldKey: 'F5', label: 'F5 · 表界面张力仪', unit: 'mN/m', maxReadings: 99, defaultCameraId: 5, readingKey: 'tension' },
       { fieldKey: 'F6', label: 'F6 · 扭矩搅拌器',  unit: '', maxReadings: 99, defaultCameraId: 6, readingKey: 'rotation_speed' },
-      { fieldKey: 'F7', label: 'F7 · 水浴锅',       unit: '°C', maxReadings: 99, defaultCameraId: 7, readingKey: 'time' },
+      { fieldKey: 'F7', label: 'F7 · 水浴锅',       unit: 's',  maxReadings: 99, defaultCameraId: 7, readingKey: 'time' },
       { fieldKey: 'F8', label: 'F8 · 6速粘度计',   unit: '', maxReadings: 99, defaultCameraId: 8, readingKey: 'actual_reading' },
     ],
   },

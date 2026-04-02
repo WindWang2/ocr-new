@@ -279,6 +279,7 @@ def upsert_reading(
     camera_id: int,
     value: float,
     run_index: int,
+    image_path: str = None,
 ) -> dict:
     """保存或更新读数（若该字段+槽位已存在则更新值，否则新增）"""
     conn = get_connection()
@@ -291,10 +292,16 @@ def upsert_reading(
     )
     row = cursor.fetchone()
     if row:
-        cursor.execute(
-            "UPDATE experiment_readings SET value=?, camera_id=?, timestamp=? WHERE id=?",
-            (value, camera_id, ts, row["id"]),
-        )
+        if image_path:
+            cursor.execute(
+                "UPDATE experiment_readings SET value=?, camera_id=?, image_path=?, timestamp=? WHERE id=?",
+                (value, camera_id, image_path, ts, row["id"]),
+            )
+        else:
+            cursor.execute(
+                "UPDATE experiment_readings SET value=?, camera_id=?, timestamp=? WHERE id=?",
+                (value, camera_id, ts, row["id"]),
+            )
         conn.commit()
         reading_id = row["id"]
         cursor.execute("SELECT * FROM experiment_readings WHERE id=?", (reading_id,))
@@ -303,7 +310,7 @@ def upsert_reading(
         return updated
     else:
         conn.close()
-        return create_reading(experiment_id, field_key, camera_id, value, run_index)
+        return create_reading(experiment_id, field_key, camera_id, value, run_index, image_path=image_path)
 
 
 def get_readings_by_experiment(experiment_id: int) -> List[dict]:

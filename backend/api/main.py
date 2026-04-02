@@ -20,7 +20,8 @@ import logging
 import json
 import io
 import openpyxl
-from openpyxl.styles import Font
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
 from pathlib import Path
 import sys
 
@@ -100,7 +101,7 @@ def _convert_and_save_image(raw_path: str, camera_id: int, run_index: int) -> Op
     # 保存到 camera_images/F{camera_id}/ 目录
     save_dir = _images_dir / f"F{camera_id}"
     save_dir.mkdir(parents=True, exist_ok=True)
-    save_name = f"{run_index:03d}.jpg"
+    save_name = f"{run_index:03d}_{datetime.now().strftime('%H%M%S')}.jpg"
     save_path = save_dir / save_name
     img.save(str(save_path), "JPEG", quality=85)
 
@@ -253,8 +254,15 @@ def run_experiment_field(exp_id: int, body: ExperimentRunField):
     mock_enabled = get_config("mock_camera_enabled", default=False)
     try:
         image_dir = get_config("image_dir", default=None) or None
-        client = MockCameraClient(camera_id=body.camera_id, image_dir=image_dir) if mock_enabled else CameraClient(camera_id=body.camera_id)
-        success, result = client.trigger_and_read()
+        if mock_enabled:
+            client = MockCameraClient(camera_id=body.camera_id, image_dir=image_dir)
+            success, result = client.trigger_and_read()
+        else:
+            camera_config = Config.get_camera_config()
+            if image_dir:
+                camera_config["image_dir"] = image_dir
+            client = CameraClient(camera_id=body.camera_id, config=camera_config)
+            success, result = client.trigger_and_read()
     except Exception as e:
         logger.error(f"相机 {body.camera_id} 拍照失败: {e}")
         return {"success": False, "detail": f"相机连接失败: {e}"}
@@ -306,7 +314,10 @@ def capture_image_endpoint(exp_id: int, body: ExperimentCaptureBody):
             client = MockCameraClient(camera_id=body.camera_id, image_dir=image_dir_config)
             success, result = client.capture_image()
         else:
-            client = CameraClient(camera_id=body.camera_id)
+            camera_config = Config.get_camera_config()
+            if image_dir_config:
+                camera_config["image_dir"] = image_dir_config
+            client = CameraClient(camera_id=body.camera_id, config=camera_config)
             success, result = client.trigger_and_read()
     except Exception as e:
         logger.error(f"相机 {body.camera_id} 拍照失败: {e}")
@@ -336,6 +347,8 @@ class ExperimentRunTestBody(BaseModel):
     image_path: Optional[str] = None
     reading_key: Optional[str] = None   # 仪器读数键，如 "actual_reading"、"tension"
     run_index: Optional[int] = None     # 槽位序号（0-based），不传则追加
+    precise: bool = False               # 精准识别：先 OCR 提取文字识别仪器类型，再二次读数
+    camera_mode: Optional[str] = None  # F0 专用："auto"（自动模式）或 "manual"（手动模式）
 
 
 @app.post("/experiments/{exp_id}/run-test")
@@ -355,8 +368,15 @@ def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
         mock_enabled = get_config("mock_camera_enabled", default=False)
         try:
             image_dir = get_config("image_dir", default=None) or None
-            client = MockCameraClient(camera_id=body.camera_id, image_dir=image_dir) if mock_enabled else CameraClient(camera_id=body.camera_id)
-            success, result = client.trigger_and_read()
+            if mock_enabled:
+                client = MockCameraClient(camera_id=body.camera_id, image_dir=image_dir)
+                success, result = client.capture_image()
+            else:
+                camera_config = Config.get_camera_config()
+                if image_dir:
+                    camera_config["image_dir"] = image_dir
+                client = CameraClient(camera_id=body.camera_id, config=camera_config)
+                success, result = client.trigger_and_read()
         except Exception as e:
             logger.error(f"相机 {body.camera_id} 拍照失败: {e}")
             return {"success": False, "detail": f"相机连接失败: {e}"}
@@ -371,13 +391,27 @@ def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
     if not saved_image_path:
         return {"success": False, "detail": "无可用图片"}
 
-    # 对保存的图片做 OCR（_extract_camera_name 会从路径推断相机名，使用专用 prompt）
+    # 对保存的图片做 OCR
     full_image_path = str(_images_dir / saved_image_path)
     try:
-        from instrument_reader import InstrumentReader
+        from instrument_reader import InstrumentReader, InstrumentLibrary
         from backend.services.llm_provider import get_global_provider
         reader = InstrumentReader(provider=get_global_provider())
-        ocr_result = reader.read_instrument(full_image_path)
+        if body.camera_mode and body.camera_id == 0:
+            # F0 指定模式：直接使用 auto/manual 专用 prompt，跳过自动判断
+            instrument_type = f"wuying_mixer_{body.camera_mode}"
+            prompt = InstrumentLibrary.get_instrument_prompt(instrument_type)
+            parsed = reader.mm_reader.analyze_image(full_image_path, prompt, call_type="read")
+            if "error" in parsed:
+                ocr_result = {"success": False, "error": parsed["error"]}
+            else:
+                ocr_result = {"success": True, "readings": parsed, "instrument_type": instrument_type}
+        elif body.precise:
+            # 精准模式：OCR提取文字 → 识别仪器类型 → 二次读数
+            ocr_result = reader._read_by_identification(full_image_path)
+        else:
+            # 快速模式：相机专用prompt直接读数
+            ocr_result = reader.read_instrument(full_image_path)
     except Exception as e:
         logger.error(f"OCR 失败: {e}")
         return {"success": False, "detail": f"OCR 识别失败: {e}"}
@@ -387,12 +421,15 @@ def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
 
     # 解析 OCR 返回的所有读数（仪器原始键值对）
     raw_response = ocr_result.get("readings", {})
-    try:
-        readings_dict = json.loads(str(raw_response)) if isinstance(raw_response, str) else {}
-    except (json.JSONDecodeError, TypeError):
+    if isinstance(raw_response, dict):
+        readings_dict = raw_response
+    elif isinstance(raw_response, str):
+        try:
+            readings_dict = json.loads(raw_response)
+        except (json.JSONDecodeError, TypeError):
+            readings_dict = {}
+    else:
         readings_dict = {}
-    if not isinstance(readings_dict, dict):
-        readings_dict = raw_response if isinstance(raw_response, dict) else {}
 
     # 过滤掉非数值（如 mode、date 字符串字段），同时保留 "MM:SS" 时间格式
     numeric_ocr: dict = {}
@@ -411,10 +448,14 @@ def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
             try:
                 numeric_ocr[k] = float(str_val)
             except (ValueError, TypeError):
-                pass  # 跳过字符串字段（mode、date 等）
+                # "##.##" 类占位符视为 0；纯字符串（mode、date 等）跳过
+                if all(c in '#.-+ ' for c in str_val) and '#' in str_val:
+                    numeric_ocr[k] = 0.0
+                # 否则跳过
 
     if not numeric_ocr:
-        return {"success": False, "detail": "OCR 未识别到数值", "all_ocr": readings_dict}
+        # 无数值字段（如仅有字符串字段），仍返回 all_ocr 供前端展示，不保存读数
+        return {"success": True, "detail": "OCR 未识别到可保存的数值", "all_ocr": readings_dict, "readings": []}
 
     # 确定主读数键：优先使用请求中传入的 reading_key，
     # 其次查相机配置的 selected_readings[0]，最后取第一个数值字段
@@ -431,7 +472,9 @@ def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
 
     primary_value = numeric_ocr.get(primary_key) if primary_key else None
     if primary_value is None:
-        return {"success": False, "detail": f"未找到读数键 '{primary_key}'", "all_ocr": readings_dict}
+        # 读数键不在 OCR 结果中，用 0 保存并附带提示
+        logger.warning(f"未找到读数键 '{primary_key}'，以 0 保存。OCR结果: {readings_dict}")
+        primary_value = 0.0
 
     # 确定 run_index：使用前端传入值（0-based），否则追加
     if body.run_index is not None:
@@ -447,22 +490,19 @@ def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
         camera_id=body.camera_id,
         value=primary_value,
         run_index=run_index,
+        image_path=saved_image_path,
     )
-    # 补充 image_path（upsert_reading 不更新 image_path，需额外更新）
-    if saved_image_path:
-        conn = get_connection()
-        conn.execute(
-            "UPDATE experiment_readings SET image_path=? WHERE id=?",
-            (saved_image_path, reading["id"])
-        )
-        conn.commit()
-        conn.close()
-        reading["image_path"] = saved_image_path
+
+    # 若 primary_value 为 0 且原始 OCR 中无该键，附加提示
+    detail = None
+    if primary_key and primary_key not in readings_dict:
+        detail = f"未找到读数键 '{primary_key}'，已以 0 保存"
 
     return {
         "success": True,
         "readings": [reading],
         "all_ocr": readings_dict,   # 完整 OCR 结果，前端用于在图片下方展示所有读数
+        **({"detail": detail} if detail else {}),
     }
 
 
@@ -594,8 +634,7 @@ def delete_experiment_api(exp_id: int):
 
 @app.get("/experiments/{exp_id}/export")
 def export_experiment(exp_id: int):
-    """导出实验数据为 xlsx，按实验类型生成对应模板格式"""
-    # openpyxl, io, StreamingResponse 均已在模块顶部导入
+    """导出实验数据为 xlsx，按实验类型生成对应模板格式，包含图片路径"""
 
     experiment = get_experiment(exp_id)
     if not experiment:
@@ -607,112 +646,275 @@ def export_experiment(exp_id: int):
     readings = experiment.get("readings", [])
     manual = experiment.get("manual_params", {})
 
-    def cell(row, col, value, bold=False):
+    # 样式辅助
+    header_fill = PatternFill("solid", fgColor="D9E1F2")
+    subheader_fill = PatternFill("solid", fgColor="EEF2FA")
+    thin = Side(style="thin", color="BBBBBB")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    def cell(row, col, value, bold=False, fill=None, align="left"):
         c = ws.cell(row=row, column=col, value=value)
         if bold:
             c.font = Font(bold=True)
+        if fill:
+            c.fill = fill
+        c.alignment = Alignment(horizontal=align, vertical="center", wrap_text=True)
+        c.border = border
         return c
 
-    ws.title = experiment["name"][:31]  # xlsx sheet name limit
+    def header_row(row, cols_values: list, fill=None):
+        """写一行标题，cols_values = [(col, value), ...]"""
+        for col, val in cols_values:
+            cell(row, col, val, bold=True, fill=fill or header_fill, align="center")
+
+    ws.title = experiment["name"][:31]
 
     if exp_type == "kinematic_viscosity":
-        cell(1, 1, "运动粘度检验记录", bold=True)
-        cell(2, 1, f"实验名称: {experiment['name']}")
-        cell(3, 1, f"温度设置: {manual.get('temperature_set','')} ℃")
-        cell(3, 3, f"最高温度: {manual.get('temperature_max','')} ℃")
-        cell(3, 5, f"最低温度: {manual.get('temperature_min','')} ℃")
-        cell(4, 1, f"毛细管系数 C: {manual.get('capillary_coeff','')} mm²/s²")
-        cell(6, 1, "实验次数", bold=True)
-        cell(6, 2, "流经时间 t(s)", bold=True)
+        # ── 标题行
+        ws.merge_cells("A1:F1")
+        cell(1, 1, "运动粘度检验原始记录", bold=True, align="center")
+        ws.cell(1, 1).font = Font(bold=True, size=13)
+
+        # ── 文件信息
+        cell(2, 1, "文件编号 File：WLD-QP5100113-02　版次 Edition：A/1", align="left")
+        ws.merge_cells("A2:F2")
+
+        # ── 头信息
+        header_row(3, [(1, "检测日期"), (3, "报告编号 NO.")], fill=subheader_fill)
+        cell(3, 2, manual.get("test_date", ""))
+        ws.merge_cells("B3:C3") if False else None  # skip merge for simplicity
+        cell(3, 4, manual.get("report_number", ""))
+        ws.merge_cells("D3:F3") if False else None
+
+        header_row(4, [(1, "被检样品名称"), (3, "样品编号")], fill=subheader_fill)
+        cell(4, 2, manual.get("sample_name", ""))
+        cell(4, 4, manual.get("sample_number", ""))
+
+        cell(5, 1, "配方说明", bold=True, fill=subheader_fill)
+        cell(5, 2, manual.get("formula_description", ""))
+        ws.merge_cells("B5:F5")
+
+        # ── 实验参数
+        header_row(6, [(1, "温控设置温度 (℃)"), (2, "最高温度 (℃)"), (3, "最低温度 (℃)"),
+                       (4, "毛细管粘度计型号"), (5, "毛细管系数 C (mm²/s²)")], fill=subheader_fill)
+        cell(7, 1, manual.get("temperature_set", ""), align="center")
+        cell(7, 2, manual.get("temperature_max", ""), align="center")
+        cell(7, 3, manual.get("temperature_min", ""), align="center")
+        cell(7, 4, manual.get("capillary_model", ""), align="center")
+        cell(7, 5, manual.get("capillary_coeff", ""), align="center")
+
+        # ── 流经时间读数
+        header_row(9, [(1, "实验次数"), (2, "流经时间 t (s)"), (3, "时间戳"), (4, "图片路径")],
+                   fill=header_fill)
         ft_readings = [r for r in readings if r["field_key"] == "flow_time"]
-        for i, r in enumerate(ft_readings, start=1):
-            cell(6 + i, 1, f"实验{i}")
-            cell(6 + i, 2, r["value"])
+        for i, r in enumerate(ft_readings):
+            row_n = 10 + i
+            cell(row_n, 1, f"实验 {i + 1}", align="center")
+            cell(row_n, 2, r["value"], align="center")
+            cell(row_n, 3, (r.get("timestamp") or "")[:19])
+            cell(row_n, 4, r.get("image_path") or "")
+
+        # ── 计算结果
+        res_row = 10 + len(ft_readings) + 1
         if ft_readings:
             avg = sum(r["value"] for r in ft_readings) / len(ft_readings)
-            coeff = float(manual.get("capillary_coeff", 0))
-            cell(6 + len(ft_readings) + 1, 1, "平均流经时间 τ", bold=True)
-            cell(6 + len(ft_readings) + 1, 2, round(avg, 4))
-            cell(6 + len(ft_readings) + 2, 1, "运动粘度 ν (mm²/s)", bold=True)
-            cell(6 + len(ft_readings) + 2, 2, round(coeff * avg, 4))
+            coeff = float(manual.get("capillary_coeff") or 0)
+            cell(res_row, 1, "平均流经时间 t̄ (s)", bold=True, fill=subheader_fill)
+            cell(res_row, 2, round(avg, 4), align="center")
+            cell(res_row + 1, 1, "运动粘度 ν = C × t̄  (mm²/s)", bold=True, fill=subheader_fill)
+            cell(res_row + 1, 2, round(coeff * avg, 4), align="center")
+
+        # 列宽
+        for col, width in [(1, 22), (2, 16), (3, 20), (4, 36), (5, 22)]:
+            ws.column_dimensions[get_column_letter(col)].width = width
+        ws.row_dimensions[1].height = 24
 
     elif exp_type == "apparent_viscosity":
-        cell(1, 1, "表观黏度检测记录", bold=True)
-        cell(2, 1, f"实验名称: {experiment['name']}")
-        cell(4, 1, "实验次数", bold=True)
-        cell(4, 2, "3rpm", bold=True)
-        cell(4, 3, "6rpm", bold=True)
-        cell(4, 4, "100rpm (α)", bold=True)
-        cell(4, 5, "表观黏度 η (mPa·s)", bold=True)
-        for run_idx in [1, 2]:
-            row = 4 + run_idx
+        ws.merge_cells("A1:F1")
+        cell(1, 1, "表观黏度检测原始记录", bold=True, align="center")
+        ws.cell(1, 1).font = Font(bold=True, size=13)
+
+        cell(2, 1, "文件编号 File：WLD/CNAS-QP7080004　版次 Edition：A/3")
+        ws.merge_cells("A2:F2")
+
+        header_row(3, [(1, "检测日期"), (3, "编号 NO.")], fill=subheader_fill)
+        cell(3, 2, manual.get("test_date", ""))
+        cell(3, 4, manual.get("report_number", ""))
+        header_row(4, [(1, "被检样品名称"), (3, "样品编号")], fill=subheader_fill)
+        cell(4, 2, manual.get("sample_name", ""))
+        cell(4, 4, manual.get("sample_number", ""))
+        cell(5, 1, "配方说明", bold=True, fill=subheader_fill)
+        cell(5, 2, manual.get("formula_description", ""))
+        ws.merge_cells("B5:F5")
+
+        # ── 表头
+        header_row(7, [(1, "实验次数"), (2, "3 rpm"), (3, "6 rpm"), (4, "100 rpm (α)"),
+                       (5, "表观黏度 η (mPa·s)"), (6, "图片路径（100rpm）")], fill=header_fill)
+
+        for run_idx in [0, 1]:
+            row_n = 8 + run_idx
             rpm3 = next((r["value"] for r in readings if r["field_key"] == "rpm3" and r["run_index"] == run_idx), "")
             rpm6 = next((r["value"] for r in readings if r["field_key"] == "rpm6" and r["run_index"] == run_idx), "")
-            rpm100 = next((r["value"] for r in readings if r["field_key"] == "rpm100" and r["run_index"] == run_idx), "")
+            rpm100_r = next((r for r in readings if r["field_key"] == "rpm100" and r["run_index"] == run_idx), None)
+            rpm100 = rpm100_r["value"] if rpm100_r else ""
             eta = round((rpm100 * 5.077) / 1.704, 4) if rpm100 != "" else ""
-            cell(row, 1, f"实验{run_idx}")
-            cell(row, 2, rpm3)
-            cell(row, 3, rpm6)
-            cell(row, 4, rpm100)
-            cell(row, 5, eta)
+            img = rpm100_r.get("image_path") or "" if rpm100_r else ""
+            cell(row_n, 1, f"实验 {run_idx + 1}", align="center")
+            cell(row_n, 2, rpm3, align="center")
+            cell(row_n, 3, rpm6, align="center")
+            cell(row_n, 4, rpm100, align="center")
+            cell(row_n, 5, eta, align="center")
+            cell(row_n, 6, img)
+
         all_eta = [(r["value"] * 5.077) / 1.704 for r in readings if r["field_key"] == "rpm100"]
         if all_eta:
-            cell(7, 1, "平均表观黏度 (mPa·s)", bold=True)
-            cell(7, 5, round(sum(all_eta) / len(all_eta), 4))
+            cell(11, 1, "平均表观黏度 (mPa·s)", bold=True, fill=subheader_fill)
+            cell(11, 5, round(sum(all_eta) / len(all_eta), 4), align="center")
+
+        # ── 每个字段的完整读数+图片
+        row_n = 13
+        cell(row_n, 1, "各读数详情（含图片路径）", bold=True, fill=subheader_fill)
+        ws.merge_cells(f"A{row_n}:F{row_n}")
+        row_n += 1
+        header_row(row_n, [(1, "字段"), (2, "实验次数"), (3, "读数值"), (4, "时间戳"), (5, "图片路径")],
+                   fill=header_fill)
+        row_n += 1
+        for r in readings:
+            cell(row_n, 1, r["field_key"])
+            cell(row_n, 2, f"实验 {r['run_index'] + 1}", align="center")
+            cell(row_n, 3, r["value"], align="center")
+            cell(row_n, 4, (r.get("timestamp") or "")[:19])
+            cell(row_n, 5, r.get("image_path") or "")
+            row_n += 1
+
+        for col, width in [(1, 18), (2, 10), (3, 12), (4, 12), (5, 20), (6, 36)]:
+            ws.column_dimensions[get_column_letter(col)].width = width
+        ws.row_dimensions[1].height = 24
 
     elif exp_type == "surface_tension":
-        cell(1, 1, "表面张力和界面张力检测记录", bold=True)
-        cell(2, 1, f"实验名称: {experiment['name']}")
-        cell(3, 1, f"室内温度: {manual.get('room_temperature','')} ℃")
-        cell(3, 3, f"室内湿度: {manual.get('room_humidity','')} %")
-        cell(4, 1, f"样品密度(25℃): {manual.get('sample_density','')} g/cm³")
-        cell(4, 3, f"煤油密度(25℃): {manual.get('kerosene_density','')} g/cm³")
-        cell(6, 1, "纯水表面张力 (mN/m)", bold=True)
-        wst = next((r["value"] for r in readings if r["field_key"] == "water_surface_tension"), "")
-        cell(6, 2, wst)
-        cell(8, 1, "破胶液表面张力", bold=True)
-        cell(9, 1, "实验次数", bold=True)
-        cell(9, 2, "表面张力 (mN/m)", bold=True)
+        ws.merge_cells("A1:F1")
+        cell(1, 1, "表面张力和界面张力检测原始记录", bold=True, align="center")
+        ws.cell(1, 1).font = Font(bold=True, size=13)
+
+        cell(2, 1, "文件编号 File：WLD/CNAS-QP7080004　版次 Edition：A/3　执行标准：SY/T 5370-2018")
+        ws.merge_cells("A2:F2")
+
+        # ── 头信息
+        for r_idx, (lbl1, key1, lbl2, key2) in enumerate([
+            ("检测日期", "test_date", "检测报告编号", "report_number"),
+            ("被检样品名称", "sample_name", "样品编号", "sample_number"),
+            ("样品状态", "sample_state", "配液编号", "formula_number"),
+        ], start=3):
+            cell(r_idx, 1, lbl1, bold=True, fill=subheader_fill)
+            cell(r_idx, 2, manual.get(key1, ""))
+            cell(r_idx, 3, lbl2, bold=True, fill=subheader_fill)
+            cell(r_idx, 4, manual.get(key2, ""))
+
+        cell(6, 1, "配方说明", bold=True, fill=subheader_fill)
+        cell(6, 2, manual.get("formula_description", ""))
+        ws.merge_cells("B6:F6")
+
+        # ── 环境条件
+        header_row(7, [(1, "室内温度 (℃)"), (2, "室内湿度 (%)"),
+                       (3, "25℃ 破胶液密度 (g/cm³)"), (4, "25℃ 煤油密度 (g/cm³)")],
+                   fill=subheader_fill)
+        cell(8, 1, manual.get("room_temperature", ""), align="center")
+        cell(8, 2, manual.get("room_humidity", ""), align="center")
+        cell(8, 3, manual.get("sample_density", ""), align="center")
+        cell(8, 4, manual.get("kerosene_density", ""), align="center")
+
+        # ── 纯水表面张力
+        cell(10, 1, "纯水表面张力验证", bold=True, fill=subheader_fill)
+        ws.merge_cells("A10:F10")
+        header_row(11, [(1, "项目"), (2, "测试值 (mN/m)"), (3, "时间戳"), (4, "图片路径")],
+                   fill=header_fill)
+        wst_r = next((r for r in readings if r["field_key"] == "water_surface_tension"), None)
+        cell(12, 1, "纯水表面张力")
+        cell(12, 2, wst_r["value"] if wst_r else "", align="center")
+        cell(12, 3, (wst_r.get("timestamp") or "")[:19] if wst_r else "")
+        cell(12, 4, wst_r.get("image_path") or "" if wst_r else "")
+
+        # ── 破胶液表面张力
+        cell(14, 1, f"破胶液表面张力（样品密度 {manual.get('sample_density','')} g/cm³）",
+             bold=True, fill=subheader_fill)
+        ws.merge_cells("A14:F14")
+        header_row(15, [(1, "实验次数"), (2, "表面张力 (mN/m)"), (3, "时间戳"), (4, "图片路径")],
+                   fill=header_fill)
         fst = [r for r in readings if r["field_key"] == "fluid_surface_tension"]
-        for i, r in enumerate(fst, start=1):
-            cell(9 + i, 1, f"实验{i}")
-            cell(9 + i, 2, r["value"])
+        for i, r in enumerate(fst):
+            rn = 16 + i
+            cell(rn, 1, f"实验 {i + 1}", align="center")
+            cell(rn, 2, r["value"], align="center")
+            cell(rn, 3, (r.get("timestamp") or "")[:19])
+            cell(rn, 4, r.get("image_path") or "")
+        avg_row = 16 + len(fst)
         if fst:
-            cell(9 + len(fst) + 1, 1, "算术平均值", bold=True)
-            cell(9 + len(fst) + 1, 2, round(sum(r["value"] for r in fst) / len(fst), 4))
-        base = 9 + len(fst) + 3
-        cell(base, 1, "破胶液界面张力", bold=True)
-        cell(base + 1, 1, "实验次数", bold=True)
-        cell(base + 1, 2, "界面张力 (mN/m)", bold=True)
+            cell(avg_row, 1, "算术平均值", bold=True, fill=subheader_fill)
+            cell(avg_row, 2, round(sum(r["value"] for r in fst) / len(fst), 4), align="center")
+
+        # ── 破胶液界面张力
+        base = avg_row + 2
+        cell(base, 1, f"破胶液界面张力（煤油密度 {manual.get('kerosene_density','')} g/cm³）",
+             bold=True, fill=subheader_fill)
+        ws.merge_cells(f"A{base}:F{base}")
+        header_row(base + 1, [(1, "实验次数"), (2, "界面张力 (mN/m)"), (3, "时间戳"), (4, "图片路径")],
+                   fill=header_fill)
         fit = [r for r in readings if r["field_key"] == "fluid_interface_tension"]
-        for i, r in enumerate(fit, start=1):
-            cell(base + 1 + i, 1, f"实验{i}")
-            cell(base + 1 + i, 2, r["value"])
+        for i, r in enumerate(fit):
+            rn = base + 2 + i
+            cell(rn, 1, f"实验 {i + 1}", align="center")
+            cell(rn, 2, r["value"], align="center")
+            cell(rn, 3, (r.get("timestamp") or "")[:19])
+            cell(rn, 4, r.get("image_path") or "")
         if fit:
-            cell(base + 1 + len(fit) + 1, 1, "算术平均值", bold=True)
-            cell(base + 1 + len(fit) + 1, 2, round(sum(r["value"] for r in fit) / len(fit), 4))
+            avg_r = base + 2 + len(fit)
+            cell(avg_r, 1, "算术平均值", bold=True, fill=subheader_fill)
+            cell(avg_r, 2, round(sum(r["value"] for r in fit) / len(fit), 4), align="center")
+            sign_row = avg_r + 2
+        else:
+            sign_row = base + 4
+
+        # ── 签署区
+        cell(sign_row, 1, "备注", bold=True, fill=subheader_fill)
+        cell(sign_row, 2, manual.get("remarks", ""))
+        ws.merge_cells(f"B{sign_row}:F{sign_row}")
+        cell(sign_row + 1, 1, "检测人", bold=True, fill=subheader_fill)
+        cell(sign_row + 1, 2, manual.get("operator_name", ""))
+        cell(sign_row + 1, 3, "检测时间", bold=True, fill=subheader_fill)
+        cell(sign_row + 1, 4, manual.get("operator_time", ""))
+        cell(sign_row + 2, 1, "审核人", bold=True, fill=subheader_fill)
+        cell(sign_row + 2, 2, manual.get("reviewer_name", ""))
+        cell(sign_row + 2, 3, "审核日期", bold=True, fill=subheader_fill)
+        cell(sign_row + 2, 4, manual.get("reviewer_date", ""))
+
+        for col, width in [(1, 22), (2, 16), (3, 20), (4, 36)]:
+            ws.column_dimensions[get_column_letter(col)].width = width
+        ws.row_dimensions[1].height = 24
 
     elif exp_type == "test":
-        cell(1, 1, "测试模板拍照记录", bold=True)
+        ws.merge_cells("A1:F1")
+        cell(1, 1, "全相机测试拍照记录", bold=True, align="center")
+        ws.cell(1, 1).font = Font(bold=True, size=13)
         cell(2, 1, f"实验名称: {experiment['name']}")
-        row = 4
-        cell(row, 1, "相机", bold=True)
-        cell(row, 2, "读数项", bold=True)
-        cell(row, 3, "序号", bold=True)
-        cell(row, 4, "读数值", bold=True)
-        cell(row, 5, "时间", bold=True)
+        ws.merge_cells("A2:F2")
+
+        header_row(4, [(1, "相机位"), (2, "字段"), (3, "序号"), (4, "读数值"),
+                       (5, "时间戳"), (6, "图片路径")], fill=header_fill)
+        row_n = 5
         for cam_id in range(9):
-            field_key = f"F{cam_id}"
             cam_readings = [r for r in readings if r["camera_id"] == cam_id]
-            if cam_readings:
-                row += 1
-                cell(row, 1, field_key, bold=True)
-                for i, r in enumerate(cam_readings, start=1):
-                    cell(row + i, 2, r["field_key"])
-                    cell(row + i, 3, i)
-                    cell(row + i, 4, r["value"])
-                    cell(row + i, 5, r["timestamp"][:19])
-                row += len(cam_readings)
+            for i, r in enumerate(cam_readings):
+                cell(row_n, 1, f"F{cam_id}", align="center")
+                cell(row_n, 2, r["field_key"])
+                cell(row_n, 3, i + 1, align="center")
+                cell(row_n, 4, r["value"], align="center")
+                cell(row_n, 5, (r.get("timestamp") or "")[:19])
+                cell(row_n, 6, r.get("image_path") or "")
+                row_n += 1
+
+        for col, width in [(1, 10), (2, 16), (3, 8), (4, 12), (5, 20), (6, 36)]:
+            ws.column_dimensions[get_column_letter(col)].width = width
+        ws.row_dimensions[1].height = 24
 
     buf = io.BytesIO()
     wb.save(buf)

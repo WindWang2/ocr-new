@@ -1,26 +1,16 @@
 'use client'
-/**
- * CaptureSlot — 单个读数槽位
- *
- * 每个槽位始终显示可编辑输入框，支持：
- *   A. 拍照识别：captureImage → 显示图片 → runTestCapture(readingKey) → 自动填入主读数
- *      图片下方展示该仪器所有 OCR 读数（all_ocr）
- *   B. 手动填写：直接在输入框输入数值，失焦或回车保存
- *
- * run_index 与 slotIndex 严格对应（0-based），避免索引错位。
- * pendingImage 由 useEffect 监听 reading.image_path 更新后清除，不会有空窗期。
- */
 import { useState, useEffect } from 'react'
 import { Reading } from '@/types'
 import { captureImage, runTestCapture, saveManualReading } from '@/lib/api'
-import { Camera, RefreshCw, RotateCcw } from 'lucide-react'
+import { ocrLabel } from '@/lib/ocrLabels'
+import { Camera, RefreshCw, RotateCcw, ScanSearch } from 'lucide-react'
 
 interface Props {
   experimentId: number
   fieldKey: string
   cameraId: number
-  slotIndex: number     // 0-based，对应 run_index
-  readingKey: string    // 仪器 OCR 结果中对应此槽位的键，如 "actual_reading"、"tension"
+  slotIndex: number
+  readingKey: string
   label: string
   unit: string
   reading: Reading | null
@@ -37,28 +27,27 @@ export default function CaptureSlot({
 }: Props) {
   const [pendingImage, setPendingImage] = useState<string | null>(null)
   const [phase, setPhase] = useState<'idle' | 'capturing' | 'recognizing'>('idle')
+  const [precising, setPrecising] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [warn, setWarn] = useState<string | null>(null)
   const [inputVal, setInputVal] = useState(reading ? String(reading.value) : '')
   const [saving, setSaving] = useState(false)
-  // 所有 OCR 读数（仪器原始键值对），展示在图片下方
   const [allOcr, setAllOcr] = useState<Record<string, number | string | null> | null>(null)
 
   useEffect(() => {
     if (reading != null) setInputVal(String(reading.value))
   }, [reading])
 
-  // reading.image_path 到位后清除 pendingImage，避免图片空窗期
   useEffect(() => {
-    if (reading?.image_path && pendingImage) {
-      setPendingImage(null)
-    }
-  }, [reading])
+    if (reading?.image_path && pendingImage) setPendingImage(null)
+  }, [reading, pendingImage])
 
   const isBusy = phase !== 'idle'
 
   const handleCapture = async () => {
     if (isBusy || disabled) return
     setError(null)
+    setWarn(null)
     setAllOcr(null)
     try {
       setPhase('capturing')
@@ -70,12 +59,43 @@ export default function CaptureSlot({
         experimentId, fieldKey, cameraId, image_path, readingKey, slotIndex
       )
       if (result.all_ocr) setAllOcr(result.all_ocr)
-      await onComplete()
+      if (!result.success) {
+        setError(result.detail || '识别失败')
+      } else {
+        if (result.detail) setWarn(result.detail)
+        await onComplete()
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '拍照失败')
       setPendingImage(null)
     } finally {
       setPhase('idle')
+    }
+  }
+
+  const handlePrecise = async () => {
+    if (precising || isBusy) return
+    const imgPath = pendingImage ?? reading?.image_path
+    if (!imgPath) return
+    setError(null)
+    setWarn(null)
+    setAllOcr(null)
+    setPrecising(true)
+    try {
+      const result = await runTestCapture(
+        experimentId, fieldKey, cameraId, imgPath, readingKey, slotIndex, true
+      )
+      if (result.all_ocr) setAllOcr(result.all_ocr)
+      if (!result.success) {
+        setError(result.detail || '精准识别失败')
+      } else {
+        if (result.detail) setWarn(result.detail)
+        await onComplete()
+      }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '精准识别失败')
+    } finally {
+      setPrecising(false)
     }
   }
 
@@ -100,8 +120,8 @@ export default function CaptureSlot({
   }
 
   const displayImage = pendingImage ?? reading?.image_path ?? null
+  const hasImage = !!displayImage
 
-  // 所有 OCR 读数展示（只显示数值型字段，跳过 mode/date 等字符串）
   const ocrEntries = allOcr
     ? Object.entries(allOcr).filter(([, v]) => v !== null && typeof v === 'number')
     : []
@@ -123,10 +143,25 @@ export default function CaptureSlot({
     </div>
   )
 
+  const preciseBtn = (
+    <button
+      onClick={handlePrecise}
+      disabled={!hasImage || precising || isBusy}
+      title="精准识别：OCR提取文字后二次读数"
+      className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition ${
+        !hasImage || precising || isBusy
+          ? 'border-gray-200 text-gray-300 cursor-not-allowed'
+          : 'border-purple-200 text-purple-600 hover:bg-purple-50'
+      }`}
+    >
+      {precising ? <RefreshCw size={11} className="animate-spin" /> : <ScanSearch size={11} />}
+      精准识别
+    </button>
+  )
+
   if (compact) {
     return (
       <div className="flex flex-col border border-gray-100 rounded-xl overflow-hidden bg-white">
-        {/* 图片区 */}
         <div className="relative bg-gray-50 h-28">
           {displayImage ? (
             <img src={`/images/${displayImage}`} alt={label} className="w-full h-full object-cover" />
@@ -135,28 +170,26 @@ export default function CaptureSlot({
               <Camera size={20} className="text-gray-200" />
             </div>
           )}
-          {isBusy && (
+          {(isBusy || precising) && (
             <div className="absolute inset-0 bg-white/70 flex flex-col items-center justify-center gap-1">
               <RefreshCw size={16} className="animate-spin text-brand-500" />
               <span className="text-[10px] text-brand-500">
-                {phase === 'capturing' ? '拍摄中' : '识别中'}
+                {precising ? '精准识别中' : phase === 'capturing' ? '拍摄中' : '识别中'}
               </span>
             </div>
           )}
         </div>
 
-        {/* OCR 所有读数（图片下方） */}
         {ocrEntries.length > 0 && (
           <div className="px-2.5 pt-1.5 flex flex-wrap gap-x-2 gap-y-0.5">
             {ocrEntries.map(([k, v]) => (
               <span key={k} className={`text-[10px] ${k === readingKey ? 'text-brand-600 font-semibold' : 'text-gray-400'}`}>
-                {k}: {String(v)}
+                {ocrLabel(k)}: {String(v)}
               </span>
             ))}
           </div>
         )}
 
-        {/* 底部 */}
         <div className="px-2.5 py-2 flex flex-col gap-1.5">
           <div className="flex items-center justify-between">
             <span className="text-[11px] text-gray-400">{label}</span>
@@ -174,6 +207,8 @@ export default function CaptureSlot({
             {isBusy ? <RefreshCw size={11} className="animate-spin" /> : <Camera size={11} />}
             {phase === 'capturing' ? '拍摄中' : phase === 'recognizing' ? '识别中' : '拍照识别'}
           </button>
+          {preciseBtn}
+          {warn && <p className="text-[10px] text-amber-500 truncate" title={warn}>{warn}</p>}
           {error && <p className="text-[10px] text-red-500 truncate" title={error}>{error}</p>}
         </div>
       </div>
@@ -184,7 +219,6 @@ export default function CaptureSlot({
   return (
     <div className="border border-gray-100 rounded-xl bg-white overflow-hidden hover:shadow-sm transition-shadow">
       <div className="flex items-start gap-4 p-4">
-        {/* 左侧：图片 */}
         <div className="flex flex-col gap-2 shrink-0">
           <div className="relative w-48 h-36 rounded-lg overflow-hidden bg-gray-50 border border-gray-100">
             {displayImage ? (
@@ -194,21 +228,20 @@ export default function CaptureSlot({
                 <Camera size={24} className="text-gray-200" />
               </div>
             )}
-            {isBusy && (
+            {(isBusy || precising) && (
               <div className="absolute inset-0 bg-white/75 flex flex-col items-center justify-center gap-1.5">
                 <RefreshCw size={18} className="animate-spin text-brand-500" />
                 <span className="text-xs text-brand-500">
-                  {phase === 'capturing' ? '正在拍摄...' : '正在识别...'}
+                  {precising ? '精准识别中...' : phase === 'capturing' ? '正在拍摄...' : '正在识别...'}
                 </span>
               </div>
             )}
           </div>
-          {/* 图片下方：所有 OCR 读数 */}
           {ocrEntries.length > 0 && (
             <div className="w-48 bg-gray-50/80 rounded-lg px-2.5 py-2 border border-gray-100 space-y-0.5">
               {ocrEntries.map(([k, v]) => (
                 <div key={k} className={`flex justify-between text-[11px] ${k === readingKey ? 'text-brand-600 font-semibold' : 'text-gray-500'}`}>
-                  <span>{k}</span>
+                  <span>{ocrLabel(k)}</span>
                   <span className="tabular-nums">{String(v)}</span>
                 </div>
               ))}
@@ -216,7 +249,6 @@ export default function CaptureSlot({
           )}
         </div>
 
-        {/* 右侧 */}
         <div className="flex-1 min-w-0 flex flex-col justify-between h-36">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
@@ -235,6 +267,7 @@ export default function CaptureSlot({
           </div>
 
           <div className="flex items-center gap-2 justify-end">
+            {preciseBtn}
             {reading && (
               <button
                 onClick={handleCapture}
@@ -261,6 +294,11 @@ export default function CaptureSlot({
         </div>
       </div>
 
+      {warn && (
+        <div className="px-4 pb-3">
+          <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2">{warn}</p>
+        </div>
+      )}
       {error && (
         <div className="px-4 pb-3">
           <p className="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</p>
