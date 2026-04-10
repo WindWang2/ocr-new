@@ -34,15 +34,22 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
   const [selectedReadings, setSelectedReadings] = useState<Record<number, string[]>>(() =>
     Object.fromEntries(schema.cameraFields.map((f, i) => [i, []]))
   )
+  // F0 专用：手动/自动模式（仅 test 类型 F0 字段使用）
+  const [f0Mode, setF0Mode] = useState<'auto' | 'manual'>('auto')
 
   useEffect(() => {
     getCameraInstruments().then(data => {
       setInstruments(data)
-      // 默认选中所有读数
       const defaults: Record<number, string[]> = {}
       schema.cameraFields.forEach((f, i) => {
         const cameraId = cameraConfigs[i]?.camera_id ?? f.defaultCameraId
-        defaults[i] = (data[`F${cameraId}`]?.readings || []).map(r => r.key)
+        if (type === 'test') {
+          // 测试模板默认选中所有读数
+          defaults[i] = (data[`F${cameraId}`]?.readings || []).map(r => r.key)
+        } else {
+          // 三种模板实验默认只选 schema 中指定的一种读数
+          defaults[i] = [f.readingKey]
+        }
       })
       setSelectedReadings(defaults)
     }).catch(() => {})
@@ -50,9 +57,14 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
 
   const updateCamera = (index: number, cameraId: number) => {
     setCameraConfigs(prev => prev.map((c, i) => i === index ? { ...c, camera_id: cameraId } : c))
-    // 切换相机时自动选中该相机所有读数
-    const readings = instruments[`F${cameraId}`]?.readings || []
-    setSelectedReadings(prev => ({ ...prev, [index]: readings.map(r => r.key) }))
+    if (type === 'test') {
+      const readings = instruments[`F${cameraId}`]?.readings || []
+      setSelectedReadings(prev => ({ ...prev, [index]: readings.map(r => r.key) }))
+    } else {
+      // 模板实验切换相机时保持只选当前字段的默认读数
+      const readingKey = schema.cameraFields[index]?.readingKey
+      setSelectedReadings(prev => ({ ...prev, [index]: readingKey ? [readingKey] : [] }))
+    }
   }
 
   const toggleReading = (positionIndex: number, readingKey: string) => {
@@ -67,10 +79,15 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
 
   const handleSubmit = async () => {
     setError('')
-    const configs = cameraConfigs.map((c, i) => ({
-      ...c,
-      selected_readings: selectedReadings[i] || [],
-    }))
+    const configs = cameraConfigs.map((c, i) => {
+      const fieldKey = schema.cameraFields[i]?.fieldKey
+      const cfg: typeof c & { selected_readings: string[]; camera_mode?: string } = {
+        ...c,
+        selected_readings: selectedReadings[i] || [],
+      }
+      if (fieldKey === 'F0') cfg.camera_mode = f0Mode
+      return cfg
+    })
     await onSubmit(manualParams, configs).catch(e => setError(e.message))
   }
 
@@ -127,6 +144,7 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
           const instrumentName = getInstrumentName(cameraId)
           const readings = getReadings(cameraId)
           const selected = selectedReadings[idx] || []
+          const isF0 = field.fieldKey === 'F0'
           return (
             <div key={field.fieldKey} className="bg-white/60 rounded-lg px-3 py-3 space-y-2.5">
               <div className="flex items-center gap-3">
@@ -137,6 +155,27 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
                     <div className="text-[11px] text-gray-400 mt-0.5 leading-relaxed">{field.description}</div>
                   )}
                 </div>
+                {/* F0 专用：自动/手动模式选择 */}
+                {isF0 && (
+                  <div className="flex rounded-lg overflow-hidden border border-gray-200 text-xs shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setF0Mode('auto')}
+                      className={`px-3 py-1.5 font-medium transition ${
+                        f0Mode === 'auto' ? 'text-white' : 'bg-white text-gray-500 hover:bg-gray-50'
+                      }`}
+                      style={f0Mode === 'auto' ? { background: 'var(--brand)' } : undefined}
+                    >自动模式</button>
+                    <button
+                      type="button"
+                      onClick={() => setF0Mode('manual')}
+                      className={`px-3 py-1.5 font-medium transition border-l border-gray-200 ${
+                        f0Mode === 'manual' ? 'text-white' : 'bg-white text-gray-500 hover:bg-gray-50'
+                      }`}
+                      style={f0Mode === 'manual' ? { background: 'var(--brand)' } : undefined}
+                    >手动模式</button>
+                  </div>
+                )}
                 <select
                   value={cameraId}
                   onChange={e => updateCamera(idx, Number(e.target.value))}

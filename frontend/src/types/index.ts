@@ -9,6 +9,7 @@ export interface CameraFieldConfig {
   camera_id: number
   max_readings: number
   selected_readings?: string[]
+  camera_mode?: string  // F0专用：'auto' | 'manual'
 }
 
 export interface ManualParams {

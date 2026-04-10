@@ -2,81 +2,85 @@
 import { useState, useEffect, useCallback } from 'react'
 import { ExperimentViewProps } from '@/types'
 import { EXPERIMENT_SCHEMAS } from '@/lib/experimentTypes'
-import { getCameraInstruments, captureImage, runTestCapture, getExperiment } from '@/lib/api'
-import { Camera, RefreshCw } from 'lucide-react'
+import { getCameraInstruments, captureImage, runTestCapture } from '@/lib/api'
+import { ocrLabel } from '@/lib/ocrLabels'
+import { Camera, RefreshCw, ScanSearch } from 'lucide-react'
 
 export default function TestTemplate({ experiment, onRefresh }: ExperimentViewProps) {
   const schema = EXPERIMENT_SCHEMAS.test
   const [instruments, setInstruments] = useState<Record<string, { name: string; readings: { key: string; label: string; unit: string }[] }>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
-  // 拍照后立即显示的图片（OCR 完成前）
-  const [pendingImages, setPendingImages] = useState<Record<string, { image_path: string; timestamp: string }>>({})
-  // 每个位置的 OCR 状态
-  const [ocrBusy, setOcrBusy] = useState<Record<string, boolean>>({})
+  const [warns, setWarns] = useState<Record<string, string>>({})
+  const [pendingImages, setPendingImages] = useState<Record<string, string>>({})
+  const [phase, setPhase] = useState<Record<string, 'idle' | 'capturing' | 'recognizing'>>({})
+  const [precising, setPrecising] = useState<Record<string, boolean>>({})
+  const [allOcrMap, setAllOcrMap] = useState<Record<string, Record<string, number | string | null>>>({})
+  // F0 专用：手动/自动模式（从绑定配置中读取默认值）
+  const f0Config = experiment.camera_configs.find(c => c.field_key === 'F0')
+  const [f0Mode, setF0Mode] = useState<'auto' | 'manual'>(
+    (f0Config?.camera_mode as 'auto' | 'manual') ?? 'auto'
+  )
 
   useEffect(() => {
     getCameraInstruments().then(setInstruments).catch(() => {})
   }, [])
 
-  const getInstrument = (cameraId: number) => {
-    return instruments[`F${cameraId}`] || { name: '', readings: [] }
-  }
+  const getCameraMode = (fieldKey: string) => fieldKey === 'F0' ? f0Mode : undefined
 
-  const getSelectedKeys = (cameraId: number): string[] => {
-    const config = experiment.camera_configs.find(c => c.camera_id === cameraId)
-    return config?.selected_readings || []
-  }
-
-  const handleCapture = useCallback(async (fieldKey: string, cameraId: number) => {
+  const handlePrecise = useCallback(async (fieldKey: string, cameraId: number, readingKey: string, imgPath: string, cameraMode?: string) => {
     setErrors(prev => ({ ...prev, [fieldKey]: '' }))
+    setWarns(prev => ({ ...prev, [fieldKey]: '' }))
+    setAllOcrMap(prev => ({ ...prev, [fieldKey]: {} }))
+    setPrecising(prev => ({ ...prev, [fieldKey]: true }))
     try {
-      // 第一步：拍照并保存图片（快速）
-      const captureResult = await captureImage(experiment.id, cameraId)
-      if (captureResult.image_path) {
-        setPendingImages(prev => ({
-          ...prev,
-          [fieldKey]: { image_path: captureResult.image_path!, timestamp: new Date().toISOString() },
-        }))
+      const result = await runTestCapture(
+        experiment.id, fieldKey, cameraId, imgPath, readingKey, undefined, true, cameraMode
+      )
+      if (result.all_ocr) setAllOcrMap(prev => ({ ...prev, [fieldKey]: result.all_ocr! }))
+      if (!result.success) {
+        setErrors(prev => ({ ...prev, [fieldKey]: result.detail || '精准识别失败' }))
+      } else {
+        if (result.detail) setWarns(prev => ({ ...prev, [fieldKey]: result.detail! }))
+        await onRefresh()
       }
-
-      // 第二步：OCR 识别（较慢），传入 image_path 跳过重复拍照
-      setOcrBusy(prev => ({ ...prev, [fieldKey]: true }))
-      const ocrResult = await runTestCapture(experiment.id, fieldKey, cameraId, captureResult.image_path)
-
-      // OCR 完成，通知父组件刷新实验数据（获取真实 readings）
-      await onRefresh()
-
-      // 清除 pending 状态
-      setPendingImages(prev => {
-        const next = { ...prev }
-        delete next[fieldKey]
-        return next
-      })
-      setOcrBusy(prev => ({ ...prev, [fieldKey]: false }))
     } catch (e: unknown) {
-      setErrors(prev => ({ ...prev, [fieldKey]: e instanceof Error ? e.message : '失败' }))
-      setPendingImages(prev => {
-        const next = { ...prev }
-        delete next[fieldKey]
-        return next
-      })
-      setOcrBusy(prev => ({ ...prev, [fieldKey]: false }))
+      setErrors(prev => ({ ...prev, [fieldKey]: e instanceof Error ? e.message : '精准识别失败' }))
+    } finally {
+      setPrecising(prev => ({ ...prev, [fieldKey]: false }))
     }
   }, [experiment.id, onRefresh])
 
-  // 将 readings 按 camera_id → 图片分组
-  const readingsByCamera = new Map<number, Map<string, typeof experiment.readings>>()
-  for (const r of experiment.readings) {
-    if (!readingsByCamera.has(r.camera_id)) {
-      readingsByCamera.set(r.camera_id, new Map())
+  const handleCapture = useCallback(async (fieldKey: string, cameraId: number, readingKey: string, cameraMode?: string) => {
+    setErrors(prev => ({ ...prev, [fieldKey]: '' }))
+    setWarns(prev => ({ ...prev, [fieldKey]: '' }))
+    setAllOcrMap(prev => ({ ...prev, [fieldKey]: {} }))
+    try {
+      setPhase(prev => ({ ...prev, [fieldKey]: 'capturing' }))
+      const captureResult = await captureImage(experiment.id, cameraId)
+      if (captureResult.image_path) {
+        setPendingImages(prev => ({ ...prev, [fieldKey]: captureResult.image_path! }))
+      }
+
+      setPhase(prev => ({ ...prev, [fieldKey]: 'recognizing' }))
+      const result = await runTestCapture(
+        experiment.id, fieldKey, cameraId, captureResult.image_path, readingKey,
+        undefined, false, cameraMode
+      )
+      if (result.all_ocr) setAllOcrMap(prev => ({ ...prev, [fieldKey]: result.all_ocr! }))
+      if (!result.success) {
+        setErrors(prev => ({ ...prev, [fieldKey]: result.detail || '识别失败' }))
+      } else {
+        if (result.detail) setWarns(prev => ({ ...prev, [fieldKey]: result.detail! }))
+        await onRefresh()
+      }
+      setPendingImages(prev => { const n = { ...prev }; delete n[fieldKey]; return n })
+    } catch (e: unknown) {
+      setErrors(prev => ({ ...prev, [fieldKey]: e instanceof Error ? e.message : '失败' }))
+      setPendingImages(prev => { const n = { ...prev }; delete n[fieldKey]; return n })
+    } finally {
+      setPhase(prev => ({ ...prev, [fieldKey]: 'idle' }))
     }
-    const camMap = readingsByCamera.get(r.camera_id)!
-    const groupKey = r.image_path || r.timestamp
-    if (!camMap.has(groupKey)) {
-      camMap.set(groupKey, [])
-    }
-    camMap.get(groupKey)!.push(r)
-  }
+  }, [experiment.id, onRefresh])
 
   return (
     <div className="space-y-4">
@@ -84,138 +88,130 @@ export default function TestTemplate({ experiment, onRefresh }: ExperimentViewPr
         const config = experiment.camera_configs.find(c => c.field_key === field.fieldKey)
         if (!config) return null
         const cameraId = config.camera_id
-        const instrument = getInstrument(cameraId)
-        const selectedKeys = getSelectedKeys(cameraId)
-        const captureGroups = readingsByCamera.get(cameraId)
-        const pending = pendingImages[field.fieldKey]
-        const isOcrBusy = ocrBusy[field.fieldKey] || false
-        const isBusy = Object.values(ocrBusy).some(Boolean)
+        const instrument = instruments[`F${cameraId}`] || { name: '', readings: [] }
+        const currentPhase = phase[field.fieldKey] || 'idle'
+        const isBusy = currentPhase !== 'idle'
+        const isPrecising = precising[field.fieldKey] || false
+        const pendingImage = pendingImages[field.fieldKey]
+        const allOcr = allOcrMap[field.fieldKey] || {}
+        const isF0 = field.fieldKey === 'F0'
+        const cameraMode = isF0 ? f0Mode : undefined
 
-        // 按 selected_readings 过滤
-        let filteredGroups: Map<string, typeof experiment.readings> | null = null
-        if (captureGroups) {
-          filteredGroups = new Map()
-          for (const [key, readings] of captureGroups) {
-            const filtered = selectedKeys.length > 0
-              ? readings.filter(r => selectedKeys.includes(r.field_key))
-              : readings
-            if (filtered.length > 0) {
-              filteredGroups.set(key, filtered)
-            }
-          }
-        }
+        const fieldReadings = experiment.readings
+          .filter(r => r.field_key === field.fieldKey)
+          .sort((a, b) => a.run_index - b.run_index)
 
-        const totalReadings = filteredGroups
-          ? Array.from(filteredGroups.values()).reduce((sum, g) => sum + g.length, 0)
-          : 0
+        const displayImage = pendingImage ?? fieldReadings[fieldReadings.length - 1]?.image_path ?? null
+        const ocrEntries = Object.entries(allOcr).filter(([, v]) => v !== null)
 
         return (
-          <div key={field.fieldKey} className="border border-gray-100 rounded-xl p-5 bg-white hover:shadow-sm transition-shadow duration-200">
+          <div key={field.fieldKey} className="border border-gray-100 rounded-xl p-5 bg-white hover:shadow-sm transition-shadow">
             <div className="flex justify-between items-start mb-3">
               <div>
                 <div className="font-semibold text-gray-800 text-sm">{field.label}</div>
-                <div className="text-[11px] text-gray-400 mt-1">
-                  F{cameraId} · {instrument.name}
-                </div>
-                {selectedKeys.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1.5">
-                    {selectedKeys.map(k => {
-                      const rd = instrument.readings.find(r => r.key === k)
-                      return rd ? (
-                        <span key={k} className="px-1.5 py-0.5 bg-brand-50 text-brand-600 rounded text-[10px]">
-                          {rd.label}
-                        </span>
-                      ) : null
-                    })}
+                <div className="text-[11px] text-gray-400 mt-0.5">F{cameraId} · {instrument.name}</div>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap justify-end">
+                {/* F0 专用模式切换 */}
+                {isF0 && (
+                  <div className="flex rounded-lg overflow-hidden border border-gray-200 text-xs">
+                    <button
+                      onClick={() => setF0Mode('auto')}
+                      className={`px-3 py-1.5 font-medium transition ${
+                        f0Mode === 'auto' ? 'bg-brand-500 text-white' : 'bg-white text-gray-500 hover:bg-gray-50'
+                      }`}
+                      style={f0Mode === 'auto' ? { background: 'var(--brand)' } : undefined}
+                    >自动模式</button>
+                    <button
+                      onClick={() => setF0Mode('manual')}
+                      className={`px-3 py-1.5 font-medium transition border-l border-gray-200 ${
+                        f0Mode === 'manual' ? 'bg-brand-500 text-white' : 'bg-white text-gray-500 hover:bg-gray-50'
+                      }`}
+                      style={f0Mode === 'manual' ? { background: 'var(--brand)' } : undefined}
+                    >手动模式</button>
                   </div>
                 )}
+                <button
+                  onClick={() => handleCapture(field.fieldKey, cameraId, field.readingKey, cameraMode)}
+                  disabled={isBusy || isPrecising}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium transition ${
+                    isBusy || isPrecising ? 'bg-gray-100 text-gray-400 cursor-wait' : 'text-white hover:opacity-90 shadow-sm'
+                  }`}
+                  style={!(isBusy || isPrecising) ? { background: 'var(--brand)' } : undefined}
+                >
+                  {isBusy
+                    ? <><RefreshCw size={14} className="animate-spin" />{currentPhase === 'capturing' ? '拍摄中' : '识别中'}</>
+                    : <><Camera size={14} />拍照识别</>}
+                </button>
+                <button
+                  onClick={() => { const img = pendingImage ?? displayImage; if (img) handlePrecise(field.fieldKey, cameraId, field.readingKey, img, cameraMode) }}
+                  disabled={!displayImage || isPrecising || isBusy}
+                  title="精准识别：OCR提取文字后二次读数"
+                  className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border transition ${
+                    !displayImage || isPrecising || isBusy
+                      ? 'border-gray-200 text-gray-300 cursor-not-allowed'
+                      : 'border-purple-200 text-purple-600 hover:bg-purple-50'
+                  }`}
+                >
+                  {isPrecising ? <RefreshCw size={13} className="animate-spin" /> : <ScanSearch size={13} />}
+                  精准识别
+                </button>
               </div>
-              <button
-                onClick={() => handleCapture(field.fieldKey, cameraId)}
-                disabled={isBusy}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium transition-all duration-200 ${
-                  isBusy
-                    ? 'bg-gray-100 text-gray-400 cursor-wait'
-                    : 'text-white hover:opacity-90 shadow-sm'
-                }`}
-                style={!isBusy ? { background: 'var(--brand)' } : undefined}
-              >
-                {isOcrBusy ? (
-                  <><RefreshCw size={14} className="animate-spin" />识别中...</>
-                ) : (
-                  <><Camera size={14} />拍照识别</>
-                )}
-              </button>
             </div>
 
+            {warns[field.fieldKey] && (
+              <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mb-3">{warns[field.fieldKey]}</p>
+            )}
             {errors[field.fieldKey] && (
               <p className="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2 mb-3">{errors[field.fieldKey]}</p>
             )}
 
-            {/* Pending image: 拍照成功但 OCR 还没完成 */}
-            {pending && (
-              <div className="bg-blue-50/50 rounded-lg px-3.5 py-2.5 border border-blue-100">
-                <div className="flex items-start gap-2.5">
-                  {pending.image_path && (
-                    <img
-                      src={`/images/${pending.image_path}`}
-                      alt="识别中"
-                      className="w-56 h-40 object-cover rounded border border-blue-200 shrink-0 bg-gray-100"
-                    />
-                  )}
-                  <div className="flex items-center gap-2 flex-1">
-                    <RefreshCw size={14} className="animate-spin text-brand-500" />
-                    <span className="text-xs text-brand-500">正在识别读数...</span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* 已完成的读数组 */}
-            {filteredGroups && filteredGroups.size > 0 && (
-              <div className="space-y-2">
-                {Array.from(filteredGroups.entries()).map(([groupKey, groupReadings], groupIdx) => {
-                  const imagePath = groupReadings[0]?.image_path
-                  const timestamp = groupReadings[0]?.timestamp
-                  return (
-                    <div key={groupKey} className="bg-gray-50/80 rounded-lg px-3.5 py-2.5 border border-gray-50">
-                      <div className="flex items-start gap-2.5">
-                        {imagePath && (
-                          <img
-                            src={`/images/${imagePath}`}
-                            alt={`#${groupIdx + 1}`}
-                            className="w-56 h-40 object-cover rounded border border-gray-200 shrink-0 bg-gray-100"
-                            loading="lazy"
-                          />
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-gray-400 text-xs font-medium">#{groupIdx + 1}</span>
-                            <span className="text-[11px] text-gray-300">
-                              {timestamp ? new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}
-                            </span>
-                          </div>
-                          <div className="flex flex-wrap gap-x-4 gap-y-0.5">
-                            {groupReadings.map(r => {
-                              const rd = instrument.readings.find(ir => ir.key === r.field_key)
-                              return (
-                                <div key={r.id} className="text-sm">
-                                  <span className="text-gray-400 text-xs">{rd?.label || r.field_key}: </span>
-                                  <span className="font-semibold text-gray-800">{r.value}</span>
-                                  <span className="text-gray-400 text-xs"> {rd?.unit || ''}</span>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        </div>
-                      </div>
+            {displayImage && (
+              <div className="flex gap-3 items-start mb-3">
+                <div className="relative shrink-0">
+                  <img
+                    src={`/images/${displayImage}`}
+                    alt={field.label}
+                    className="w-56 h-40 object-cover rounded-lg border border-gray-200 bg-gray-100"
+                  />
+                  {(isBusy || isPrecising) && (
+                    <div className="absolute inset-0 bg-white/70 flex flex-col items-center justify-center gap-1 rounded-lg">
+                      <RefreshCw size={16} className="animate-spin text-brand-500" />
+                      <span className="text-[11px] text-brand-500">
+                        {isPrecising ? '精准识别中' : currentPhase === 'capturing' ? '拍摄中' : '识别中'}
+                      </span>
                     </div>
-                  )
-                })}
+                  )}
+                </div>
+                {ocrEntries.length > 0 && (
+                  <div className="bg-gray-50 rounded-lg px-3 py-2 border border-gray-100 space-y-1 min-w-[140px]">
+                    {ocrEntries.map(([k, v]) => (
+                      <div key={k} className={`flex justify-between gap-4 text-[11px] ${k === field.readingKey ? 'text-brand-600 font-semibold' : 'text-gray-500'}`}>
+                        <span>{ocrLabel(k)}</span>
+                        <span className="tabular-nums">{String(v)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
-            {totalReadings === 0 && !pending && !errors[field.fieldKey] && (
+            {fieldReadings.length > 0 && (
+              <div className="space-y-1">
+                {fieldReadings.map((r, i) => (
+                  <div key={r.id} className="flex items-center gap-3 text-sm bg-gray-50/80 rounded-lg px-3 py-1.5">
+                    <span className="text-gray-400 text-xs w-6">#{i + 1}</span>
+                    <span className="font-semibold text-gray-800 tabular-nums">{r.value}</span>
+                    <span className="text-gray-400 text-xs">{field.unit}</span>
+                    <span className="text-[11px] text-gray-300 ml-auto">
+                      {r.timestamp ? new Date(r.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!displayImage && fieldReadings.length === 0 && !errors[field.fieldKey] && (
               <p className="text-xs text-gray-300 text-center py-2">暂无读数，点击拍照开始</p>
             )}
           </div>

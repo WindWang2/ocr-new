@@ -24,15 +24,33 @@ export default function KinematicViscosity({ experiment, onRefresh }: Experiment
   return (
     <div className="space-y-5">
 
-      {/* 实验参数 */}
+      {/* 记录头信息 */}
       <div className="bg-gray-50/80 rounded-xl p-4 border border-gray-100">
-        <h3 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-3">实验参数</h3>
-        <div className="grid grid-cols-2 gap-x-8 gap-y-2.5 text-sm">
-          <ParamRow label="温控设置温度" value={p.temperature_set} unit="℃" />
-          <ParamRow label="毛细管粘度计型号" value={p.capillary_model} unit="" />
-          <ParamRow label="最高温度" value={p.temperature_max} unit="℃" />
-          <ParamRow label="最低温度" value={p.temperature_min} unit="℃" />
-          <ParamRow label="毛细管系数 C" value={p.capillary_coeff} unit="mm²/s²" />
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">检验原始记录</h3>
+          <span className="text-[10px] text-gray-300">文件编号：WLD-QP5100113-02　版次：A/1</span>
+        </div>
+        <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm mb-3">
+          <ParamRow label="检测日期" value={p.test_date} unit="" />
+          <ParamRow label="报告编号 NO." value={p.report_number} unit="" />
+          <ParamRow label="被检样品名称" value={p.sample_name} unit="" />
+          <ParamRow label="样品编号" value={p.sample_number} unit="" />
+          {p.formula_description && (
+            <div className="col-span-2 flex justify-between">
+              <span className="text-gray-400">配方说明</span>
+              <span className="font-medium text-gray-700">{String(p.formula_description)}</span>
+            </div>
+          )}
+        </div>
+        <div className="border-t border-gray-100 pt-3">
+          <h4 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">实验参数</h4>
+          <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm">
+            <ParamRow label="温控设置温度" value={p.temperature_set} unit="℃" />
+            <ParamRow label="毛细管粘度计型号" value={p.capillary_model} unit="" />
+            <ParamRow label="最高温度" value={p.temperature_max} unit="℃" />
+            <ParamRow label="最低温度" value={p.temperature_min} unit="℃" />
+            <ParamRow label="毛细管系数 C" value={p.capillary_coeff} unit="mm²/s²" />
+          </div>
         </div>
       </div>
 

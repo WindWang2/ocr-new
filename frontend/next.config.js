@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
+  pageExtensions: ['tsx', 'ts', 'jsx', 'js'],
   async rewrites() {
     return [
       {

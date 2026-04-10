@@ -15,6 +15,18 @@ import ResultSummary from '@/components/ExperimentDetail/ResultSummary'
 const RPM_FIELDS = ['rpm3', 'rpm6', 'rpm100'] as const
 const RPM_LABELS = { rpm3: '3 rpm', rpm6: '6 rpm', rpm100: '100 rpm (α)' }
 
+function ParamRow({ label, value, unit }: { label: string; value: unknown; unit: string }) {
+  return (
+    <div className="flex justify-between">
+      <span className="text-gray-400">{label}</span>
+      <span className="font-medium text-gray-700 tabular-nums">
+        {value != null && value !== '' ? String(value) : '—'}
+        {unit && value != null && value !== '' && <span className="text-gray-300 text-xs ml-1">{unit}</span>}
+      </span>
+    </div>
+  )
+}
+
 export default function ApparentViscosity({ experiment, onRefresh }: ExperimentViewProps) {
   const schema = EXPERIMENT_SCHEMAS.apparent_viscosity
 
@@ -33,8 +45,30 @@ export default function ApparentViscosity({ experiment, onRefresh }: ExperimentV
     return ((r.value * 5.077) / 1.704).toFixed(4)
   }
 
+  const p = experiment.manual_params
+
   return (
     <div className="space-y-5">
+
+      {/* 记录头信息 */}
+      <div className="bg-gray-50/80 rounded-xl p-4 border border-gray-100">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">检测原始记录</h3>
+          <span className="text-[10px] text-gray-300">文件编号：WLD/CNAS-QP7080004　版次：A/3</span>
+        </div>
+        <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm">
+          <ParamRow label="检测日期" value={p.test_date} unit="" />
+          <ParamRow label="编号 NO." value={p.report_number} unit="" />
+          <ParamRow label="被检样品名称" value={p.sample_name} unit="" />
+          <ParamRow label="样品编号" value={p.sample_number} unit="" />
+          {p.formula_description && (
+            <div className="col-span-2 flex justify-between">
+              <span className="text-gray-400">配方说明</span>
+              <span className="font-medium text-gray-700">{String(p.formula_description)}</span>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* 操作规程（始终展示） */}
       <div className="rounded-xl border border-amber-100 bg-amber-50/40 overflow-hidden">

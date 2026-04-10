@@ -127,16 +127,21 @@ export async function runTestCapture(
   imagePath?: string,
   readingKey?: string,
   runIndex?: number,
+  precise?: boolean,
+  cameraMode?: string,
 ): Promise<{ success: boolean; readings?: Reading[]; all_ocr?: Record<string, number | string | null>; detail?: string }> {
   const body: Record<string, unknown> = { field_key: fieldKey, camera_id: cameraId }
   if (imagePath) body.image_path = imagePath
   if (readingKey) body.reading_key = readingKey
   if (runIndex !== undefined) body.run_index = runIndex
+  if (precise) body.precise = true
+  if (cameraMode) body.camera_mode = cameraMode
   const data = await request<{ success: boolean; readings?: Reading[]; all_ocr?: Record<string, number | string | null>; detail?: string }>(
     `/experiments/${experimentId}/run-test`,
     { method: 'POST', body: JSON.stringify(body) },
   )
-  if (!data.success) throw new Error(data.detail || '识别失败')
+  // 即使识别失败，如果有 all_ocr 数据也返回给前端展示（不抛出）
+  if (!data.success && !data.all_ocr) throw new Error(data.detail || '识别失败')
   return data
 }
 
