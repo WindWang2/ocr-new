@@ -58,8 +58,8 @@ export async function captureReading(
       body: JSON.stringify({ field_key: fieldKey, camera_id: cameraId }),
     },
   )
-  if (!data.success) throw new Error(data.detail || 'OCR 识别失败')
-  return data.reading!
+  if (!data.success || !data.reading) throw new Error(data.detail || 'OCR 识别失败')
+  return data.reading
 }
 
 export function exportUrl(experimentId: number): string {
@@ -120,6 +120,16 @@ export async function captureImage(
   return data
 }
 
+interface RunTestBody {
+  field_key: string
+  camera_id: number
+  image_path?: string
+  reading_key?: string
+  run_index?: number
+  precise?: boolean
+  camera_mode?: string
+}
+
 export async function runTestCapture(
   experimentId: number,
   fieldKey: string,
@@ -130,7 +140,7 @@ export async function runTestCapture(
   precise?: boolean,
   cameraMode?: string,
 ): Promise<{ success: boolean; readings?: Reading[]; all_ocr?: Record<string, number | string | null>; detail?: string }> {
-  const body: Record<string, unknown> = { field_key: fieldKey, camera_id: cameraId }
+  const body: RunTestBody = { field_key: fieldKey, camera_id: cameraId }
   if (imagePath) body.image_path = imagePath
   if (readingKey) body.reading_key = readingKey
   if (runIndex !== undefined) body.run_index = runIndex
