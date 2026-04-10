@@ -18,3 +18,4 @@ json/
 clip_library.json
 test_img/
 *.xlsx
+experiments.db

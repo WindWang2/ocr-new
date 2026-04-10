@@ -17,7 +17,9 @@ DB_PATH = Path(__file__).parent.parent / "experiments.db"
 
 def get_connection():
     """获取数据库连接"""
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=10)
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=20)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -61,16 +63,37 @@ def init_db():
         )
     """)
     
-    # 迁移：为旧 experiments 表添加新列（幂等）
-    for col_def in [
-        "ALTER TABLE experiments ADD COLUMN type TEXT",
-        "ALTER TABLE experiments ADD COLUMN manual_params TEXT",
-        "ALTER TABLE experiments ADD COLUMN camera_configs TEXT",
-    ]:
-        try:
-            cursor.execute(col_def)
-        except Exception:
-            pass  # 列已存在则忽略
+    # DB 迁移管理
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS db_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("SELECT version FROM db_migrations ORDER BY version DESC LIMIT 1")
+    row = cursor.fetchone()
+    current_version = row["version"] if row else 0
+
+    migrations = [
+        # Version 1: Add new columns to experiments
+        [
+            "ALTER TABLE experiments ADD COLUMN type TEXT",
+            "ALTER TABLE experiments ADD COLUMN manual_params TEXT",
+            "ALTER TABLE experiments ADD COLUMN camera_configs TEXT"
+        ]
+    ]
+
+    for i, stmts in enumerate(migrations):
+        version = i + 1
+        if current_version < version:
+            for stmt in stmts:
+                try:
+                    cursor.execute(stmt)
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e).lower():
+                        raise e
+            cursor.execute("INSERT INTO db_migrations (version) VALUES (?)", (version,))
+            print(f"[DB] Applied migration v{version}")
 
     # 新增：每次读数独立记录
     cursor.execute("""

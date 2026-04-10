@@ -19,7 +19,10 @@ from datetime import datetime
 import logging
 import json
 import io
+import os
 import openpyxl
+import asyncio
+import time
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 from pathlib import Path
@@ -59,9 +62,11 @@ app = FastAPI(
 )
 
 # CORS 中间件
+allowed_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8001,http://127.0.0.1:8001").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -71,6 +76,26 @@ app.add_middleware(
 _images_dir = Path("camera_images")
 _images_dir.mkdir(exist_ok=True)
 app.mount("/images", StaticFiles(directory=str(_images_dir)), name="images")
+
+async def image_cleanup_task():
+    """定期清理过期的图片文件，防止磁盘占满"""
+    retention_days = float(os.getenv("IMAGE_RETENTION_DAYS", "7"))
+    while True:
+        try:
+            now = time.time()
+            for root, dirs, files in os.walk(str(_images_dir)):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    if now - os.path.getmtime(file_path) > retention_days * 86400:
+                        os.remove(file_path)
+                        logger.info(f"Cleaned up old image: {file_path}")
+        except Exception as e:
+            logger.error(f"图片清理任务出错: {e}")
+        await asyncio.sleep(86400)  # 每天运行一次
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(image_cleanup_task())
 
 
 def _convert_and_save_image(raw_path: str, camera_id: int, run_index: int) -> Optional[str]:
