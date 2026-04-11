@@ -37,6 +37,7 @@ from backend.models.database import (
     get_experiment, list_experiments, delete_experiment,
     create_reading, upsert_reading, get_readings_by_experiment, get_connection,
     get_config, set_config,
+    get_all_templates, get_template, upsert_template,
 )
 from backend.services.camera_control import (
     CameraClient, get_all_enabled_cameras
@@ -137,6 +138,22 @@ def _convert_and_save_image(raw_path: str, camera_id: int, run_index: int) -> Op
 
 
 # ==================== 请求模型 ====================
+
+class TemplateField(BaseModel):
+    name: str
+    label: str
+    unit: Optional[str] = ""
+    type: str = "float"
+
+class InstrumentTemplateCreate(BaseModel):
+    instrument_type: str
+    name: str
+    description: Optional[str] = ""
+    prompt_template: str
+    fields: List[TemplateField]
+    keywords: List[str]
+    example_images: Optional[List[str]] = []
+    default_tier: int = 2
 
 class CameraCreate(BaseModel):
     name: str
@@ -993,6 +1010,31 @@ def set_image_dir_config(body: ImageDirUpdate):
 
 
 # ==================== 工具 API ====================
+
+@app.get("/templates")
+def list_templates():
+    """获取所有仪器模板"""
+    templates = get_all_templates()
+    for t in templates:
+        t['fields'] = json.loads(t['fields_json'])
+        t['keywords'] = json.loads(t['keywords_json'])
+        t['example_images'] = json.loads(t['example_images_json'] or '[]')
+    return {"success": True, "templates": templates}
+
+@app.post("/templates")
+def create_or_update_template(body: InstrumentTemplateCreate):
+    """创建或更新仪器模板"""
+    upsert_template(
+        instrument_type=body.instrument_type,
+        name=body.name,
+        description=body.description,
+        prompt_template=body.prompt_template,
+        fields=[f.dict() for f in body.fields],
+        keywords=body.keywords,
+        example_images=body.example_images,
+        default_tier=body.default_tier
+    )
+    return {"success": True, "message": "Template saved"}
 
 # ==================== LLM 模型配置 API ====================
 
