@@ -169,27 +169,29 @@ class DynamicInstrumentLibrary:
 
     @classmethod
     def identify_instrument_prompt(cls) -> str:
-        prompt = """识别图片中的仪器类型，按以下优先顺序判断：
+        """获取仪器类型识别的prompt（从数据库动态生成）"""
+        templates = cls.get_all()
+        
+        rules_text = ""
+        for i, t in enumerate(templates, 1):
+            keywords_str = "、".join([f'"{kw}"' for kw in t["keywords"]])
+            rules_text += f"{i}. {t['instrument_type']}: {t['description']} (识别关键词: {keywords_str})\n"
+            
+        instrument_types = ", ".join([t['instrument_type'] for t in templates])
 
-1. water_quality_meter: 屏幕出现"空白值"、"检测值"、"吸光度"、"透光度"任意字样 → 优先选此项
-2. wuying_mixer_auto: 中间表格有"段一"、"段二"、"段三"三行（只看表格行标签，不看左侧菜单）
-3. wuying_mixer_manual: 中间表格有"高速"、"低速"两行（只看表格行标签，不看左侧菜单）
-4. ph_meter: 屏幕显示pH值、PTS字样
-5. temperature_controller: 屏幕有TEMP和TIME两个标签
-6. surface_tension_meter: 显示张力(mN/m)、密度(g/cm³)、升降速度
-7. torque_stirrer: 显示rpm转速、N.cm扭矩
-8. viscometer_6speed: 显示剪切速率、表观粘度
-9. electronic_balance: LED数码管显示重量(g)
+        prompt = f"""识别图片中的仪器类型，按以下优先顺序判断：
+
+{rules_text}
 
 【重要】你必须严格按照以下JSON格式输出，不要输出任何其他内容（不要分析、不要解释、不要思考过程）：
 
-{"instrument_type": "选中的仪器类型标识", "confidence": 0.95}
+{{"instrument_type": "选中的仪器类型标识", "confidence": 0.95}}
 
 输出要求：
 1. 只输出一行JSON，不要有其他任何文字
 2. 不要使用Markdown代码块
 3. 不要输出分析过程
-4. instrument_type 必须是上述9个选项之一
+4. instrument_type 必须是以下选项之一: {instrument_types}
 
 """
         return prompt
