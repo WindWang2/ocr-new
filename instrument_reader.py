@@ -10,13 +10,30 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union, Type
 from config import Config
+
+from pydantic import create_model, Field
 
 logger = logging.getLogger(__name__)
 
 
 from backend.models.database import get_all_templates, get_template
+
+def get_pydantic_model_for_instrument(instrument_type: str):
+    """根据仪器模板字段，动态创建 Pydantic 模型。"""
+    t = DynamicInstrumentLibrary.get_template(instrument_type)
+    if not t:
+        return None
+    fields_config = t.get('fields', [])
+    model_fields = {}
+    for f in fields_config:
+        # 绝大多数读数是 float，默认设为 Optional[float]
+        # 注意：这里我们强制设为 Optional 以容忍部分读取失败
+        model_fields[f['name']] = (Optional[float], Field(default=None, description=f.get('label', '')))
+    
+    DynamicModel = create_model(f'{instrument_type}Model', **model_fields)
+    return DynamicModel
 
 class DynamicInstrumentLibrary:
     @classmethod
@@ -225,13 +242,14 @@ class MultimodalModelReader:
 
         logger.info("使用 LLM 后端, 模型: %s", self.model_name)
 
-    def analyze_image(self, image_path: str, prompt: str, call_type: str = "unknown") -> Dict[str, Any]:
+    def analyze_image(self, image_path: str, prompt: str, call_type: str = "unknown", instrument_type: str = None) -> Dict[str, Any]:
         """使用多模态模型分析图片
 
         Args:
             image_path: 图片路径
             prompt: 提示词
             call_type: 调用类型（identify/read），用于保存调试文件
+            instrument_type: 仪器类型，若提供则执行 Pydantic 校验
         """
         try:
             # 读取图片，统一转为 RGB JPEG 发送（兼容灰度图、BMP 等格式）
@@ -253,8 +271,13 @@ class MultimodalModelReader:
             logger.debug("模型原始响应: %s", result_text[:500] if len(result_text) > 500 else result_text)
 
             parsed = self._parse_json_response(result_text)
+            
+            # 若提供了仪器类型，且解析成功（或包含非严重错误），尝试进行 Pydantic 校验
+            if instrument_type and "error" not in parsed:
+                parsed = self._validate_with_pydantic(parsed, instrument_type)
+            
             if "error" in parsed:
-                logger.warning("JSON解析失败，原始响应: %s", result_text)
+                logger.warning("分析失败或解析错误，原始响应: %s", result_text)
 
             # 保存响应到JSON文件（调试用）
             self._save_response_debug(image_path, call_type, prompt, result_text, parsed)
@@ -265,6 +288,20 @@ class MultimodalModelReader:
             import traceback
             traceback.print_exc()
             return {"error": str(e)}
+
+    def _validate_with_pydantic(self, parsed_json: dict, instrument_type: str) -> dict:
+        """使用动态创建的 Pydantic 模型验证 LLM 响应结果"""
+        model_class = get_pydantic_model_for_instrument(instrument_type)
+        if not model_class:
+            return parsed_json
+        try:
+            # 兼容 Pydantic V2
+            validated = model_class(**parsed_json)
+            return validated.model_dump()
+        except Exception as e:
+            logger.warning(f"Validation failed for {instrument_type}: {e}")
+            # 返回校验错误信息，并保留原始解析数据供排查
+            return {"error": f"Validation failed: {str(e)}", "raw_parsed": parsed_json}
 
     def _parse_json_response(self, text: str) -> Dict[str, Any]:
         """解析JSON响应（支持嵌套JSON、Markdown代码块）"""
@@ -404,7 +441,7 @@ class MultimodalModelReader:
         prompt = DynamicInstrumentLibrary.get_instrument_prompt(instrument_type)
         if ocr_text:
             prompt = f"【OCR识别文字参考】\n{ocr_text}\n\n{prompt}"
-        return self.analyze_image(image_path, prompt, call_type="read")
+        return self.analyze_image(image_path, prompt, call_type="read", instrument_type=instrument_type)
 
 
 class InstrumentReader:
@@ -484,12 +521,25 @@ class InstrumentReader:
         """使用相机专用prompt直接读取（单步，跳过识别）"""
         logger.info("相机 %s: 使用专用prompt直接读取", camera_name)
 
+        # 在单步读取中，尝试预先确定仪器类型以支持 Pydantic 校验
+        # 注意：对于 F0 这样包含模式切换的，初步假设为 auto，校验失败也没关系
+        mock_parsed = {"mode": "auto"} if camera_name == "F0" else {}
+        instrument_type = DynamicInstrumentLibrary.get_instrument_type_from_camera(camera_name, mock_parsed)
+
         prompt = DynamicInstrumentLibrary.get_camera_prompt(camera_name)
-        parsed = self.mm_reader.analyze_image(image_path, prompt, call_type="read")
+        parsed = self.mm_reader.analyze_image(image_path, prompt, call_type="read", instrument_type=instrument_type)
 
         if "error" in parsed:
-            return {"success": False, "error": f"数值读取失败: {parsed['error']}"}
+            # 如果是 Pydantic 校验失败，尝试切换到 manual 模式再试一次 (针对 F0)
+            if camera_name == "F0" and "Validation failed" in parsed.get("error", ""):
+                logger.info("F0 auto模式校验失败，尝试以 manual 模式读取...")
+                instrument_type = "wuying_mixer_manual"
+                parsed = self.mm_reader.analyze_image(image_path, prompt, call_type="read", instrument_type=instrument_type)
+            
+            if "error" in parsed:
+                return {"success": False, "error": f"数值读取失败: {parsed['error']}"}
 
+        # 重新确定最终的仪器类型
         instrument_type = DynamicInstrumentLibrary.get_instrument_type_from_camera(camera_name, parsed)
         instrument_name = DynamicInstrumentLibrary.CAMERA_INSTRUMENT_NAMES.get(camera_name, camera_name)
         readings = parsed  # 平铺JSON直接作为readings
