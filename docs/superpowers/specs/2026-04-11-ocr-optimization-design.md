@@ -33,8 +33,9 @@ Instrument types, prompts, and keywords are currently hardcoded in `instrument_r
   - Identification Keywords (for routing)
   - LLM Prompt Template (with variables for few-shot injection if needed)
   - Default Tier Routing (Tier 1 vs. Tier 2)
-- **Backend API:** Implement CRUD endpoints (`/templates`) for managing these configurations.
-- **Frontend UI:** Build a "Template Management" screen where users can visually define fields, expected formats, and keywords.
+  - **Example Images (Few-Shot):** Store paths to user-uploaded reference images for the instrument, which can be injected into the LLM prompt as few-shot examples to improve accuracy on new or complex screens.
+- **Backend API:** Implement CRUD endpoints (`/templates`) for managing these configurations, including endpoints for uploading and serving example images.
+- **Frontend UI:** Build a "Template Management" screen where users can visually define fields, expected formats, keywords, and upload example images to guide the OCR engine.
 - **Refactoring:** Modify `InstrumentLibrary` to load its configuration dynamically from the database instead of static dictionaries.
 
 ## 4. Implementation Plan (High-Level)
