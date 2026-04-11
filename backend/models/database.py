@@ -394,9 +394,9 @@ def set_config(key: str, value) -> None:
     conn.close()
 
 
-def get_all_templates():
+def get_all_templates() -> List[dict]:
+    """获取所有仪器模板"""
     conn = get_connection()
-    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM instrument_templates")
     rows = cursor.fetchall()
@@ -404,9 +404,9 @@ def get_all_templates():
     return [dict(row) for row in rows]
 
 
-def get_template(instrument_type):
+def get_template(instrument_type: str) -> Optional[dict]:
+    """根据仪器类型获取指定的仪器模板"""
     conn = get_connection()
-    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM instrument_templates WHERE instrument_type = ?", (instrument_type,))
     row = cursor.fetchone()
@@ -414,7 +414,17 @@ def get_template(instrument_type):
     return dict(row) if row else None
 
 
-def upsert_template(instrument_type, name, description, prompt_template, fields, keywords, example_images=None, default_tier=2):
+def upsert_template(
+    instrument_type: str,
+    name: str,
+    description: str,
+    prompt_template: str,
+    fields: list,
+    keywords: list,
+    example_images: Optional[list] = None,
+    default_tier: int = 2
+) -> None:
+    """插入或更新仪器模板记录"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute('''
