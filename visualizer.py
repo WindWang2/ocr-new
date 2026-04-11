@@ -9,7 +9,7 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
-from instrument_reader import InstrumentReader, InstrumentLibrary
+from instrument_reader import InstrumentReader, DynamicInstrumentLibrary
 
 
 class InstrumentVisualizer:
@@ -181,8 +181,8 @@ class InstrumentVisualizer:
         readings = []
         readings_data = result.get("readings", {})
         if readings_data:
-            instrument_info = InstrumentLibrary.INSTRUMENTS.get(instrument_type, {})
-            units = instrument_info.get("unit", {})
+            template = DynamicInstrumentLibrary.get_template(instrument_type)
+            units = {f.get("name"): f.get("unit", "") for f in template.get("fields", [])} if template else {}
 
             for attr, value in readings_data.items():
                 if value is not None:

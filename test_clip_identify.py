@@ -140,8 +140,13 @@ def identify_by_clip(image_path: str, library: dict) -> tuple[str, float]:
 
 
 def get_unit(instrument_type: str, field: str) -> str:
-    from instrument_reader import InstrumentLibrary
-    return InstrumentLibrary.INSTRUMENTS.get(instrument_type, {}).get("unit", {}).get(field, "")
+    from instrument_reader import DynamicInstrumentLibrary
+    template = DynamicInstrumentLibrary.get_template(instrument_type)
+    if template:
+        for f in template.get("fields", []):
+            if f.get("name") == field:
+                return f.get("unit", "")
+    return ""
 
 
 def run(read_model: str, images: list):
@@ -152,7 +157,7 @@ def run(read_model: str, images: list):
     library = load_library()
     print(f"向量库已加载：{len(library)} 种仪器\n")
 
-    from instrument_reader import MultimodalModelReader, InstrumentLibrary
+    from instrument_reader import MultimodalModelReader, DynamicInstrumentLibrary
     reader = MultimodalModelReader(model_name=read_model)
 
     for img_path in images:
@@ -167,7 +172,8 @@ def run(read_model: str, images: list):
         # 步骤1：SigLIP2 嵌入匹配
         print("[步骤1] SigLIP2嵌入匹配...")
         instrument_type, score = identify_by_clip(img_path, library)
-        instrument_name = InstrumentLibrary.INSTRUMENTS.get(instrument_type, {}).get("name", instrument_type)
+        template = DynamicInstrumentLibrary.get_template(instrument_type)
+        instrument_name = template.get("name", instrument_type) if template else instrument_type
         print(f"  → {instrument_type} ({instrument_name})  相似度={score:.4f}")
 
         # 步骤2：模型读数

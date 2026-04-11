@@ -15,8 +15,13 @@ logging.basicConfig(level=logging.WARNING)
 
 
 def get_unit(instrument_type: str, field: str) -> str:
-    from instrument_reader import InstrumentLibrary
-    return InstrumentLibrary.INSTRUMENTS.get(instrument_type, {}).get("unit", {}).get(field, "")
+    from instrument_reader import DynamicInstrumentLibrary
+    template = DynamicInstrumentLibrary.get_template(instrument_type)
+    if template:
+        for f in template.get("fields", []):
+            if f.get("name") == field:
+                return f.get("unit", "")
+    return ""
 
 
 def main():
@@ -52,8 +57,9 @@ def main():
 
         instrument_type = identify_result.get("instrument_type")
         confidence = identify_result.get("confidence", "?")
-        from instrument_reader import InstrumentLibrary
-        instrument_name = InstrumentLibrary.INSTRUMENTS.get(instrument_type, {}).get("name", instrument_type)
+        from instrument_reader import DynamicInstrumentLibrary
+        template = DynamicInstrumentLibrary.get_template(instrument_type)
+        instrument_name = template.get("name", instrument_type) if template else instrument_type
         print(f"  仪器类型: {instrument_type}")
         print(f"  仪器名称: {instrument_name}")
         print(f"  置信度:   {confidence}")

@@ -60,11 +60,15 @@ def read_single_image(image_path: str, output_json: str = None, verbose: bool = 
                 readings = result.get("readings", {})
                 if readings:
                     print(f"\n  读数:")
-                    from instrument_reader import InstrumentLibrary
+                    from instrument_reader import DynamicInstrumentLibrary
                     instrument_type = result.get("instrument_type", "")
+                    template = DynamicInstrumentLibrary.get_template(instrument_type)
+                    unit_map = {}
+                    if template:
+                        unit_map = {f.get("name"): f.get("unit", "") for f in template.get("fields", [])}
                     for attr, value in readings.items():
                         if value is not None:
-                            unit = InstrumentLibrary.INSTRUMENTS.get(instrument_type, {}).get("unit", {}).get(attr, "")
+                            unit = unit_map.get(attr, "")
                             if unit:
                                 print(f"    {attr}: {value} {unit}")
                             else:

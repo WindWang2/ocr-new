@@ -436,13 +436,13 @@ def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
     # 对保存的图片做 OCR
     full_image_path = str(_images_dir / saved_image_path)
     try:
-        from instrument_reader import InstrumentReader, InstrumentLibrary
+        from instrument_reader import InstrumentReader, DynamicInstrumentLibrary
         from backend.services.llm_provider import get_global_provider
         reader = InstrumentReader(provider=get_global_provider())
         if body.camera_mode and body.camera_id == 0:
             # F0 指定模式：直接使用 auto/manual 专用 prompt，跳过自动判断
             instrument_type = f"wuying_mixer_{body.camera_mode}"
-            prompt = InstrumentLibrary.get_instrument_prompt(instrument_type)
+            prompt = DynamicInstrumentLibrary.get_instrument_prompt(instrument_type)
             parsed = reader.mm_reader.analyze_image(full_image_path, prompt, call_type="read")
             if "error" in parsed:
                 ocr_result = {"success": False, "error": parsed["error"]}

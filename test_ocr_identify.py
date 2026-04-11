@@ -62,8 +62,13 @@ def get_ocr_text(image_path: str, ocr_model: str, base_url: str) -> str:
 
 
 def get_unit(instrument_type: str, field: str) -> str:
-    from instrument_reader import InstrumentLibrary
-    return InstrumentLibrary.INSTRUMENTS.get(instrument_type, {}).get("unit", {}).get(field, "")
+    from instrument_reader import DynamicInstrumentLibrary
+    template = DynamicInstrumentLibrary.get_template(instrument_type)
+    if template:
+        for f in template.get("fields", []):
+            if f.get("name") == field:
+                return f.get("unit", "")
+    return ""
 
 
 def main():
@@ -78,7 +83,7 @@ def main():
     base_url = os.environ.get("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234")
     ocr_model = "glm-ocr"
 
-    from instrument_reader import MultimodalModelReader, InstrumentLibrary
+    from instrument_reader import MultimodalModelReader, DynamicInstrumentLibrary
     read_reader = MultimodalModelReader(model_name=read_model)
 
     for img_path in images:
@@ -101,7 +106,8 @@ def main():
 
         # 步骤2：关键词规则识别
         instrument_type = identify_by_keywords(ocr_text)
-        instrument_name = InstrumentLibrary.INSTRUMENTS.get(instrument_type, {}).get("name", instrument_type)
+        template = DynamicInstrumentLibrary.get_template(instrument_type)
+        instrument_name = template.get("name", instrument_type) if template else instrument_type
         print(f"[步骤2] 关键词匹配: {instrument_type} ({instrument_name})")
 
         if instrument_type == "unknown":
