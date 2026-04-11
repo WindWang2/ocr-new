@@ -119,6 +119,21 @@ def init_db():
         )
     """)
 
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS instrument_templates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        instrument_type TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        prompt_template TEXT,
+        fields_json TEXT NOT NULL,
+        keywords_json TEXT NOT NULL,
+        example_images_json TEXT,
+        default_tier INTEGER DEFAULT 2,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+
     conn.commit()
     conn.close()
     print(f"[DB] 初始化完成: {DB_PATH}")
@@ -375,6 +390,45 @@ def set_config(key: str, value) -> None:
         "INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)",
         (key, json.dumps(value)),
     )
+    conn.commit()
+    conn.close()
+
+
+def get_all_templates():
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM instrument_templates")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_template(instrument_type):
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM instrument_templates WHERE instrument_type = ?", (instrument_type,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def upsert_template(instrument_type, name, description, prompt_template, fields, keywords, example_images=None, default_tier=2):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+    INSERT INTO instrument_templates (instrument_type, name, description, prompt_template, fields_json, keywords_json, example_images_json, default_tier)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(instrument_type) DO UPDATE SET
+        name=excluded.name,
+        description=excluded.description,
+        prompt_template=excluded.prompt_template,
+        fields_json=excluded.fields_json,
+        keywords_json=excluded.keywords_json,
+        example_images_json=excluded.example_images_json,
+        default_tier=excluded.default_tier
+    ''', (instrument_type, name, description, prompt_template, json.dumps(fields), json.dumps(keywords), json.dumps(example_images or []), default_tier))
     conn.commit()
     conn.close()
 
