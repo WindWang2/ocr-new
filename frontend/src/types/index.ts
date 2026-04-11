@@ -67,3 +67,23 @@ export interface LLMModel {
 }
 
 export type LLMStatus = 'connected' | 'error' | 'loading' | 'unknown'
+
+export interface TemplateField {
+  name: string
+  label: string
+  unit: string
+  type: string
+}
+
+export interface InstrumentTemplate {
+  id?: number
+  instrument_type: string
+  name: string
+  description: string
+  prompt_template: string
+  fields: TemplateField[]
+  keywords: string[]
+  example_images: string[]
+  default_tier: number
+  created_at?: string
+}

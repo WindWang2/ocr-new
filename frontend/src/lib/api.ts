@@ -1,4 +1,4 @@
-import { Experiment, ExperimentSummary, Reading, CameraFieldConfig, ManualParams, ExperimentType, LLMConfig, LLMModel, LLMStatus } from '@/types'
+import { Experiment, ExperimentSummary, Reading, CameraFieldConfig, ManualParams, ExperimentType, LLMConfig, LLMModel, LLMStatus, InstrumentTemplate } from '@/types'
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || '/api'
 
@@ -181,5 +181,17 @@ export async function setImageDir(imageDir: string): Promise<void> {
   await request('/config/image-dir', {
     method: 'POST',
     body: JSON.stringify({ image_dir: imageDir }),
+  })
+}
+
+export async function listTemplates(): Promise<InstrumentTemplate[]> {
+  const data = await request<{ success: boolean; templates: InstrumentTemplate[] }>('/templates')
+  return data.templates
+}
+
+export async function saveTemplate(template: InstrumentTemplate): Promise<void> {
+  await request('/templates', {
+    method: 'POST',
+    body: JSON.stringify(template),
   })
 }
