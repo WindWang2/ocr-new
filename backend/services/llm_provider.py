@@ -5,11 +5,29 @@ LLM Provider - OpenAI 兼容 API 后端
 import logging
 import time
 from dataclasses import dataclass
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
-_global_provider: Optional["LLMProvider"] = None
+
+@runtime_checkable
+class LLMProvider(Protocol):
+    """LLM 后端接口定义"""
+    @property
+    def model_name(self) -> str: ...
+    @property
+    def provider_type(self) -> str: ...
+    def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        images: Optional[List[str]] = None,
+        temperature: float = 0.1,
+        max_tokens: int = 500,
+    ) -> str: ...
+    def close(self): ...
+
+
+_global_provider: Optional[LLMProvider] = None
 
 
 @dataclass
@@ -100,13 +118,13 @@ class OpenAICompatibleProvider:
         self._http.close()
 
 
-def create_provider(config: LLMConfig) -> "LLMProvider":
+def create_provider(config: LLMConfig) -> LLMProvider:
     """工厂函数：创建 provider 实例"""
     logger.info("创建 OpenAI 兼容 Provider: %s @ %s", config.model_name, config.base_url)
     return OpenAICompatibleProvider(config)
 
 
-def get_global_provider() -> "LLMProvider":
+def get_global_provider() -> LLMProvider:
     """获取全局 LLM provider 单例，首次调用时从数据库配置创建"""
     global _global_provider
     if _global_provider is not None:
@@ -137,7 +155,7 @@ def get_global_provider() -> "LLMProvider":
     return _global_provider
 
 
-def set_global_provider(provider: "LLMProvider") -> None:
+def set_global_provider(provider: LLMProvider) -> None:
     """设置全局 LLM provider 单例，关闭旧连接"""
     global _global_provider
     if _global_provider is not None and hasattr(_global_provider, 'close'):

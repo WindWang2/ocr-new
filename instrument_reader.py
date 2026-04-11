@@ -258,13 +258,28 @@ class MultimodalModelReader:
             img = Image.open(image_path).convert("RGB")
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=95)
-            image_data = buf.getvalue()
-            base64_image = base64.b64encode(image_data).decode('utf-8')
+            base64_images = [base64.b64encode(buf.getvalue()).decode('utf-8')]
+
+            # 若提供了仪器类型，尝试加载示例图片（Few-shot）
+            if instrument_type:
+                template = DynamicInstrumentLibrary.get_template(instrument_type)
+                if template and template.get('example_images'):
+                    for ex_path in template['example_images']:
+                        try:
+                            if os.path.exists(ex_path):
+                                ex_img = Image.open(ex_path).convert("RGB")
+                                ex_buf = io.BytesIO()
+                                ex_img.save(ex_buf, format="JPEG", quality=95)
+                                base64_images.append(base64.b64encode(ex_buf.getvalue()).decode('utf-8'))
+                            else:
+                                logger.warning(f"Example image not found: {ex_path}")
+                        except Exception as e:
+                            logger.warning(f"Failed to load example image {ex_path}: {e}")
 
             # 调用 LLM Provider
             result_text = self._provider.chat(
                 messages=[{"role": "user", "content": prompt}],
-                images=[base64_image],
+                images=base64_images,
                 temperature=Config.MODEL_TEMPERATURE,
                 max_tokens=Config.MODEL_MAX_TOKENS,
             )
