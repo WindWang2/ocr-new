@@ -1029,7 +1029,7 @@ def create_or_update_template(body: InstrumentTemplateCreate):
         name=body.name,
         description=body.description,
         prompt_template=body.prompt_template,
-        fields=[f.dict() for f in body.fields],
+        fields=[f.model_dump() for f in body.fields],
         keywords=body.keywords,
         example_images=body.example_images,
         default_tier=body.default_tier
