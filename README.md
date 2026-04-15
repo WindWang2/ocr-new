@@ -4,6 +4,7 @@
 
 ## 功能特性
 
+- **多仪器检测流水线** — YOLO 目标检测定位多仪器 + CLIP 仪器类型匹配 + LLM 读数提取，支持单张图片多仪器同时识别
 - **多仪表类型识别** — 支持运动粘度计、旋转粘度计、表面张力仪等 17 种实验室仪器
 - **多模态 OCR** — 通过 LMStudio（OpenAI 兼容 API）调用视觉语言模型进行仪表读数识别
 - **LLM 模型切换** — 前端下拉菜单实时切换模型，支持本地 LMStudio 和远程 OpenAI 兼容服务
@@ -20,7 +21,10 @@
 │   └── services/
 │       ├── llm_provider.py      # LLM 抽象层 (OpenAI 兼容)
 │       ├── camera_control.py    # 真实相机 TCP 客户端
-│       └── mock_camera.py       # Mock 相机 (本地图片 OCR)
+│       ├── mock_camera.py       # Mock 相机 (本地图片 OCR)
+│       ├── yolo_detector.py     # YOLO 目标检测 (多仪器定位)
+│       ├── clip_matcher.py      # CLIP 仪器类型匹配
+│       └── multi_instrument_pipeline.py  # 多仪器检测流水线
 ├── frontend/                    # Next.js 14 前端
 │   └── src/
 │       ├── app/page.tsx         # 主页面
@@ -30,6 +34,7 @@
 │       │   └── CreateExperiment/# 实验创建向导
 │       ├── lib/api.ts           # 后端 API 客户端
 │       └── types/index.ts       # TypeScript 类型定义
+├── models/                      # YOLO 权重 + CLIP 嵌入缓存
 ├── instrument_reader.py         # OCR 核心引擎 (两步识别: 仪器分类 → 读数提取)
 ├── config.py                    # 系统默认配置
 ├── camera_images/F0~F8/         # Mock 相机图片目录
@@ -44,6 +49,7 @@
 ```bash
 # 后端
 pip install -r requirements.txt
+# 新增依赖: ultralytics (YOLO), transformers (CLIP), torch (PyTorch)
 
 # 前端
 cd frontend && npm install
