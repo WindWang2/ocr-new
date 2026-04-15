@@ -4,9 +4,16 @@
 
 ## 系统架构
 
-使用 LMStudio（OpenAI 兼容 API）本地多模态模型：
-- `4b`：多模态读取（默认）
-- `2b`：多模态读取（可选）
+两种识别模式：
+
+1. **单仪器模式**：使用 LMStudio（OpenAI 兼容 API）本地多模态模型直接识别单台仪器
+   - `4b`：多模态读取（默认）
+   - `2b`：多模态读取（可选）
+
+2. **多仪器模式（YOLO+CLIP 流水线）**：支持一个相机拍摄多台仪器
+   - YOLO：检测图像中多个仪器目标并裁剪
+   - CLIP：匹配仪器类型
+   - LLM：对每个裁剪区域分别读数
 
 ---
 
@@ -180,18 +187,28 @@ python read_instrument.py image.jpg --no-visual
 
 ```
 ocr-new/
-├── config.py              # 配置文件
-├── camera_service.py      # 相机 TCP 服务
-├── instrument_reader.py   # 仪器读取器
-├── read_instrument.py     # 命令行工具
-├── visualizer.py          # 可视化工具
-├── requirements.txt       # 依赖列表
-├── demo/                  # 示例图片
-├── camera_images/         # 相机图片目录
-│   ├── camera_0/          # 相机0 图片
-│   ├── camera_1/          # 相机1 图片
-│   └── ...
-└── output/                # 输出目录
+├── config.py                    # 全局配置
+├── main.py                      # FastAPI 主入口
+├── camera_service.py            # 相机 TCP 服务
+├── instrument_reader.py         # 仪器读取器（单仪器模式）
+├── read_instrument.py           # 命令行工具
+├── visualizer.py                # 可视化工具
+├── requirements.txt             # 依赖列表
+├── backend/
+│   └── services/
+│       ├── yolo_detector.py        # YOLO 目标检测器
+│       ├── clip_matcher.py         # CLIP 仪器匹配器
+│       ├── multi_instrument_pipeline.py  # 多仪器流水线
+│       ├── llm_provider.py         # LLM 提供者
+│       └── experiment_service.py  # 实验服务
+├── models/                   # 模型权重和缓存
+│   ├── yolov8n.pt            # YOLOv8 检测模型
+│   └── clip_instrument_cache.npy  # CLIP 仪器嵌入缓存
+├── demo/                     # 示例图片
+├── camera_images/            # 相机图片目录（F0-F8 对应相机 0-8）
+├── tests/                    # 单元测试和集成测试
+├── docs/                     # 文档
+└── output/                   # 输出目录
 ```
 
 ---
@@ -213,3 +230,5 @@ ocr-new/
 ## 相关文档
 
 - [Demo 图片说明](DEMO_INSTRUMENTS.md)
+- [YOLO+CLIP 设计文档](plans/2026-04-15-yolo-clip-pipeline-design.md)
+- [YOLO+CLIP 实现计划](plans/2026-04-15-yolo-clip-pipeline-plan.md)

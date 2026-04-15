@@ -164,3 +164,45 @@ python tests/test_multi_camera_experiment.py
 - `1.jpg` ~ `8.jpg`：各相机仪器屏幕截图
 - `5-1.jpg`、`5-2.jpg`：F5 表界面张力仪多次拍照
 - `origin/`：原始 BMP 格式图片（`F0`-`F8`）
+
+---
+
+## 多仪器流水线测试
+
+### test_yolo_detector.py — YOLO 检测器单元测试
+
+测试 YOLO 目标检测器的初始化、检测和裁剪功能。
+
+```bash
+python -m pytest tests/test_yolo_detector.py -v
+```
+
+### test_clip_matcher.py — CLIP 匹配器单元测试
+
+测试 CLIP 仪器匹配器的初始化、缓存构建和嵌入提取。
+
+```bash
+python -m pytest tests/test_clip_matcher.py -v
+```
+
+### test_multi_pipeline.py — 流水线单元测试
+
+测试三步流水线编排（YOLO→CLIP→LLM），使用 mock 隔离外部依赖。
+
+```bash
+python -m pytest tests/test_multi_pipeline.py -v
+```
+
+### test_full_pipeline_integration.py — 集成测试
+
+验证所有组件初始化、多仪器检测流程和新 API 端点。
+
+```bash
+python -m pytest tests/test_full_pipeline_integration.py -v
+```
+
+### 全量测试
+
+```bash
+python -m pytest tests/ -v
+```
