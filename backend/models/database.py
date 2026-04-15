@@ -37,6 +37,7 @@ def init_db():
             camera_id INTEGER NOT NULL UNIQUE,
             control_host TEXT,
             control_port INTEGER,
+            mode TEXT DEFAULT 'single',
             enabled INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -80,7 +81,11 @@ def init_db():
             "ALTER TABLE experiments ADD COLUMN type TEXT",
             "ALTER TABLE experiments ADD COLUMN manual_params TEXT",
             "ALTER TABLE experiments ADD COLUMN camera_configs TEXT"
-        ]
+        ],
+        # Version 2: Add mode column to cameras for single/multi mode
+        [
+            "ALTER TABLE cameras ADD COLUMN mode TEXT DEFAULT 'single'"
+        ],
     ]
 
     for i, stmts in enumerate(migrations):
@@ -139,17 +144,17 @@ def init_db():
     print(f"[DB] 初始化完成: {DB_PATH}")
 
 
-def add_camera(name: str, camera_id: int, control_host: str = "127.0.0.1", 
-               control_port: int = None) -> int:
+def add_camera(name: str, camera_id: int, control_host: str = "127.0.0.1",
+               control_port: int = None, mode: str = 'single') -> int:
     """添加相机"""
     if control_port is None:
         control_port = 9000 + camera_id
-    
+
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO cameras (name, camera_id, control_host, control_port) VALUES (?, ?, ?, ?)",
-        (name, camera_id, control_host, control_port)
+        "INSERT INTO cameras (name, camera_id, control_host, control_port, mode) VALUES (?, ?, ?, ?, ?)",
+        (name, camera_id, control_host, control_port, mode)
     )
     conn.commit()
     camera_id_db = cursor.lastrowid
