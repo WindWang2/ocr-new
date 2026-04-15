@@ -160,6 +160,7 @@ class CameraCreate(BaseModel):
     camera_id: int
     control_host: Optional[str] = "127.0.0.1"
     control_port: Optional[int] = None
+    mode: Optional[str] = 'single'
 
 
 class CameraConfigItem(BaseModel):
@@ -212,7 +213,8 @@ def create_camera(camera: CameraCreate):
             name=camera.name,
             camera_id=camera.camera_id,
             control_host=camera.control_host,
-            control_port=camera.control_port
+            control_port=camera.control_port,
+            mode=camera.mode or 'single',
         )
         return {"success": True, "camera_id": camera_id_db, "message": "相机添加成功"}
     except Exception as e:
