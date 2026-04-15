@@ -1200,6 +1200,76 @@ def get_system_config():
     }
 
 
+# ==================== Multi-Instrument Pipeline API ====================
+
+class ReadMultiRequest(BaseModel):
+    image_path: Optional[str] = None
+    camera_id: Optional[int] = None
+
+
+@app.post("/api/read-multi")
+def read_multi_instruments(body: ReadMultiRequest):
+    """Multi-instrument reading endpoint.
+    Detects, classifies, and reads all instruments in the image.
+    """
+    from backend.services.multi_instrument_pipeline import MultiInstrumentPipeline
+    from PIL import Image
+
+    full_image_path = body.image_path
+
+    if not full_image_path and body.camera_id is not None:
+        mock_enabled = get_config("mock_camera_enabled", default=False)
+        image_dir = get_config("image_dir", default=None) or None
+        try:
+            if mock_enabled:
+                from backend.services.mock_camera import MockCameraClient
+                client = MockCameraClient(camera_id=body.camera_id, image_dir=image_dir)
+                success, result = client.capture_image()
+            else:
+                from backend.services.camera_control import CameraClient
+                camera_config = Config.get_camera_config()
+                if image_dir:
+                    camera_config["image_dir"] = image_dir
+                client = CameraClient(camera_id=body.camera_id, config=camera_config)
+                success, result = client.capture_image()
+        except Exception as e:
+            logger.error(f"Camera {body.camera_id} capture failed: {e}")
+            return {"success": False, "detections": [], "detail": f"Capture failed: {str(e)}"}
+
+        if not success:
+            return {"success": False, "detections": [], "detail": result.get("error", "Capture failed")}
+        full_image_path = result.get("image_path")
+        if not full_image_path:
+            return {"success": False, "detections": [], "detail": "No image captured"}
+
+    try:
+        assert full_image_path is not None
+        image = Image.open(full_image_path).convert("RGB")
+    except Exception as e:
+        return {"success": False, "detections": [], "detail": f"Cannot open image: {str(e)}"}
+
+    try:
+        pipeline = MultiInstrumentPipeline()
+        detections = pipeline.process_image(image)
+        return {"success": True, "detections": detections}
+    except Exception as e:
+        logger.error(f"Pipeline processing failed: {e}")
+        return {"success": False, "detections": [], "detail": f"Processing failed: {str(e)}"}
+
+
+@app.post("/api/rebuild-clip-cache")
+def rebuild_clip_cache():
+    """Rebuild CLIP embedding cache after template/reference image changes"""
+    from backend.services.multi_instrument_pipeline import MultiInstrumentPipeline
+    try:
+        pipeline = MultiInstrumentPipeline()
+        pipeline.rebuild_clip_cache()
+        return {"success": True, "message": "CLIP cache rebuilt successfully"}
+    except Exception as e:
+        logger.error(f"Failed to rebuild CLIP cache: {e}")
+        return {"success": False, "detail": str(e)}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)
