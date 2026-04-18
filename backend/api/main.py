@@ -43,6 +43,7 @@ from backend.services.camera_control import (
     CameraClient, get_all_enabled_cameras
 )
 from backend.services.mock_camera import MockCameraClient
+from backend.services.task_manager import task_manager, TaskState
 from config import Config
 
 # 日志配置
@@ -97,6 +98,43 @@ async def image_cleanup_task():
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(image_cleanup_task())
+    asyncio.create_task(_task_cleanup_loop())
+
+
+async def _task_cleanup_loop():
+    """定期清理过期的异步任务记录"""
+    while True:
+        try:
+            task_manager.cleanup()
+        except Exception as e:
+            logger.error(f"任务清理出错: {e}")
+        await asyncio.sleep(300)  # 每5分钟清理一次
+
+
+# ==================== 异步任务查询 API ====================
+
+@app.get("/tasks/{task_id}")
+def get_task_status(task_id: str):
+    """查询异步任务状态和结果"""
+    info = task_manager.get_status(task_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    resp = {
+        "task_id": info.task_id,
+        "status": info.status.value,
+        "progress": info.progress,
+        "message": info.message,
+        "created_at": info.created_at,
+    }
+    if info.started_at:
+        resp["started_at"] = info.started_at
+    if info.completed_at:
+        resp["completed_at"] = info.completed_at
+    if info.status == TaskState.COMPLETED and info.result is not None:
+        resp["result"] = info.result
+    if info.status == TaskState.FAILED and info.error:
+        resp["error"] = info.error
+    return resp
 
 
 def _convert_and_save_image(raw_path: str, camera_id: int, run_index: int) -> Optional[str]:
@@ -548,6 +586,302 @@ def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
         "all_ocr": readings_dict,   # 完整 OCR 结果，前端用于在图片下方展示所有读数
         **({"detail": detail} if detail else {}),
     }
+
+
+# ==================== 异步任务版本 API ====================
+# 以下端点将耗时操作（拍照 + OCR + LLM）放入后台线程执行，
+# 立即返回 task_id，前端通过 GET /tasks/{task_id} 轮询结果。
+
+def _do_run_experiment_field(exp_id: int, field_key: str, camera_id: int):
+    """后台线程：执行 run_experiment_field 的实际逻辑"""
+    experiment = get_experiment(exp_id)
+    if not experiment:
+        return {"success": False, "detail": "实验不存在"}
+
+    existing = [r for r in experiment["readings"] if r["field_key"] == field_key]
+    run_index = len(existing) + 1
+
+    mock_enabled = get_config("mock_camera_enabled", default=False)
+    try:
+        image_dir = get_config("image_dir", default=None) or None
+        if mock_enabled:
+            client = MockCameraClient(camera_id=camera_id, image_dir=image_dir)
+            success, result = client.trigger_and_read()
+        else:
+            camera_config = Config.get_camera_config()
+            if image_dir:
+                camera_config["image_dir"] = image_dir
+            client = CameraClient(camera_id=camera_id, config=camera_config)
+            success, result = client.trigger_and_read()
+    except Exception as e:
+        logger.error(f"相机 {camera_id} 拍照失败: {e}")
+        return {"success": False, "detail": f"相机连接失败: {e}"}
+
+    if not success:
+        return {"success": False, "detail": result.get("error", "OCR 识别失败")}
+
+    raw_reading = result.get("reading", "")
+    try:
+        value = float(str(raw_reading).strip())
+    except (ValueError, TypeError):
+        logger.error(f"相机 {camera_id} OCR 结果无法解析为数字: {raw_reading!r}")
+        return {"success": False, "detail": f"OCR 结果无法解析: {raw_reading}"}
+
+    saved_image_path = None
+    raw_image_path = result.get("image_path")
+    if raw_image_path:
+        saved_image_path = _convert_and_save_image(raw_image_path, camera_id, run_index)
+
+    reading = create_reading(
+        experiment_id=exp_id,
+        field_key=field_key,
+        camera_id=camera_id,
+        value=value,
+        run_index=run_index,
+        confidence=result.get("confidence"),
+        image_path=saved_image_path,
+    )
+    return {"success": True, "reading": reading}
+
+
+@app.post("/experiments/{exp_id}/run-async")
+def run_experiment_field_async(exp_id: int, body: ExperimentRunField):
+    """
+    [异步版] 触发单个字段的相机拍照→OCR→保存读数。
+
+    立即返回 task_id，前端轮询 GET /tasks/{task_id} 获取结果。
+    """
+    experiment = get_experiment(exp_id)
+    if not experiment:
+        raise HTTPException(status_code=404, detail="实验不存在")
+
+    task_id = task_manager.submit(
+        _do_run_experiment_field, exp_id, body.field_key, body.camera_id,
+    )
+    return {"task_id": task_id, "status": "pending", "message": "任务已提交，请轮询 /tasks/{task_id} 获取结果"}
+
+
+def _do_run_test_capture(exp_id: int, body_dict: dict):
+    """后台线程：执行 run_test_capture 的实际逻辑"""
+    # Reconstruct body-like access from dict
+    field_key = body_dict["field_key"]
+    camera_id = body_dict["camera_id"]
+    image_path = body_dict.get("image_path")
+    reading_key = body_dict.get("reading_key")
+    run_index_body = body_dict.get("run_index")
+    precise = body_dict.get("precise", False)
+    camera_mode = body_dict.get("camera_mode")
+
+    experiment = get_experiment(exp_id)
+    if not experiment:
+        return {"success": False, "detail": "实验不存在"}
+
+    saved_image_path = image_path
+
+    if not saved_image_path:
+        mock_enabled = get_config("mock_camera_enabled", default=False)
+        try:
+            image_dir = get_config("image_dir", default=None) or None
+            if mock_enabled:
+                client = MockCameraClient(camera_id=camera_id, image_dir=image_dir)
+                success, result = client.capture_image()
+            else:
+                camera_config = Config.get_camera_config()
+                if image_dir:
+                    camera_config["image_dir"] = image_dir
+                client = CameraClient(camera_id=camera_id, config=camera_config)
+                success, result = client.trigger_and_read()
+        except Exception as e:
+            logger.error(f"相机 {camera_id} 拍照失败: {e}")
+            return {"success": False, "detail": f"相机连接失败: {e}"}
+
+        if not success:
+            return {"success": False, "detail": result.get("error", "OCR 识别失败")}
+
+        raw_image_path = result.get("image_path")
+        if raw_image_path:
+            saved_image_path = _convert_and_save_image(raw_image_path, camera_id, 0)
+
+    if not saved_image_path:
+        return {"success": False, "detail": "无可用图片"}
+
+    # OCR
+    full_image_path = str(_images_dir / saved_image_path)
+    try:
+        from instrument_reader import InstrumentReader, DynamicInstrumentLibrary
+        from backend.services.llm_provider import get_global_provider
+        reader = InstrumentReader(provider=get_global_provider())
+        if camera_mode and camera_id == 0:
+            instrument_type = f"wuying_mixer_{camera_mode}"
+            prompt = DynamicInstrumentLibrary.get_instrument_prompt(instrument_type)
+            parsed = reader.mm_reader.analyze_image(full_image_path, prompt, call_type="read")
+            if "error" in parsed:
+                ocr_result = {"success": False, "error": parsed["error"]}
+            else:
+                ocr_result = {"success": True, "readings": parsed, "instrument_type": instrument_type}
+        elif precise:
+            ocr_result = reader._read_by_identification(full_image_path)
+        else:
+            ocr_result = reader.read_instrument(full_image_path)
+    except Exception as e:
+        logger.error(f"OCR 失败: {e}")
+        return {"success": False, "detail": f"OCR 识别失败: {e}"}
+
+    if not ocr_result.get("success"):
+        return {"success": False, "detail": ocr_result.get("error", "OCR 识别失败")}
+
+    raw_response = ocr_result.get("readings", {})
+    if isinstance(raw_response, dict):
+        readings_dict = raw_response
+    elif isinstance(raw_response, str):
+        try:
+            readings_dict = json.loads(raw_response)
+        except (json.JSONDecodeError, TypeError):
+            readings_dict = {}
+    else:
+        readings_dict = {}
+
+    numeric_ocr: dict = {}
+    for k, v in readings_dict.items():
+        if v is None:
+            continue
+        str_val = str(v).strip()
+        if k == "time" and ":" in str_val:
+            parts = str_val.split(":")
+            if len(parts) == 2:
+                try:
+                    numeric_ocr[k] = float(parts[0]) * 60 + float(parts[1])
+                except ValueError:
+                    pass
+        else:
+            try:
+                numeric_ocr[k] = float(str_val)
+            except (ValueError, TypeError):
+                if all(c in '#.-+ ' for c in str_val) and '#' in str_val:
+                    numeric_ocr[k] = 0.0
+
+    if not numeric_ocr:
+        return {"success": True, "detail": "OCR 未识别到可保存的数值", "all_ocr": readings_dict, "readings": []}
+
+    primary_key = reading_key
+    if not primary_key:
+        config = next(
+            (c for c in experiment["camera_configs"] if c["field_key"] == field_key),
+            None
+        )
+        selected = (config.get("selected_readings") or []) if config else []
+        primary_key = next((k for k in selected if k in numeric_ocr), None)
+    if not primary_key:
+        primary_key = next(iter(numeric_ocr), None)
+
+    primary_value = numeric_ocr.get(primary_key) if primary_key else None
+    if primary_value is None:
+        logger.warning(f"未找到读数键 '{primary_key}'，以 0 保存。OCR结果: {readings_dict}")
+        primary_value = 0.0
+
+    if run_index_body is not None:
+        run_index = run_index_body
+    else:
+        existing = [r for r in experiment["readings"] if r["field_key"] == field_key]
+        run_index = len(existing)
+
+    reading = upsert_reading(
+        experiment_id=exp_id,
+        field_key=field_key,
+        camera_id=camera_id,
+        value=primary_value,
+        run_index=run_index,
+        image_path=saved_image_path,
+    )
+
+    detail = None
+    if primary_key and primary_key not in readings_dict:
+        detail = f"未找到读数键 '{primary_key}'，已以 0 保存"
+
+    return {
+        "success": True,
+        "readings": [reading],
+        "all_ocr": readings_dict,
+        **({"detail": detail} if detail else {}),
+    }
+
+
+@app.post("/experiments/{exp_id}/run-test-async")
+def run_test_capture_async(exp_id: int, body: ExperimentRunTestBody):
+    """
+    [异步版] 测试模板 OCR 识别。
+
+    立即返回 task_id，前端轮询 GET /tasks/{task_id} 获取结果。
+    """
+    experiment = get_experiment(exp_id)
+    if not experiment:
+        raise HTTPException(status_code=404, detail="实验不存在")
+
+    task_id = task_manager.submit(
+        _do_run_test_capture, exp_id, body.model_dump(),
+    )
+    return {"task_id": task_id, "status": "pending", "message": "任务已提交，请轮询 /tasks/{task_id} 获取结果"}
+
+
+def _do_read_multi_instruments(body_dict: dict):
+    """后台线程：执行 read_multi_instruments 的实际逻辑"""
+    from backend.services.multi_instrument_pipeline import MultiInstrumentPipeline
+    from PIL import Image
+
+    full_image_path = body_dict.get("image_path")
+
+    if not full_image_path and body_dict.get("camera_id") is not None:
+        camera_id = body_dict["camera_id"]
+        mock_enabled = get_config("mock_camera_enabled", default=False)
+        image_dir = get_config("image_dir", default=None) or None
+        try:
+            if mock_enabled:
+                from backend.services.mock_camera import MockCameraClient
+                client = MockCameraClient(camera_id=camera_id, image_dir=image_dir)
+                success, result = client.capture_image()
+            else:
+                from backend.services.camera_control import CameraClient
+                camera_config = Config.get_camera_config()
+                if image_dir:
+                    camera_config["image_dir"] = image_dir
+                client = CameraClient(camera_id=camera_id, config=camera_config)
+                success, result = client.capture_image()
+        except Exception as e:
+            logger.error(f"Camera {camera_id} capture failed: {e}")
+            return {"success": False, "detections": [], "detail": f"Capture failed: {str(e)}"}
+
+        if not success:
+            return {"success": False, "detections": [], "detail": result.get("error", "Capture failed")}
+        full_image_path = result.get("image_path")
+        if not full_image_path:
+            return {"success": False, "detections": [], "detail": "No image captured"}
+
+    try:
+        assert full_image_path is not None
+        image = Image.open(full_image_path).convert("RGB")
+    except Exception as e:
+        return {"success": False, "detections": [], "detail": f"Cannot open image: {str(e)}"}
+
+    try:
+        pipeline = MultiInstrumentPipeline()
+        detections = pipeline.process_image(image)
+        return {"success": True, "detections": detections}
+    except Exception as e:
+        logger.error(f"Pipeline processing failed: {e}")
+        return {"success": False, "detections": [], "detail": f"Processing failed: {str(e)}"}
+
+
+@app.post("/api/read-multi-async")
+def read_multi_instruments_async(body: ReadMultiRequest):
+    """
+    [异步版] Multi-instrument reading endpoint.
+
+    立即返回 task_id，前端轮询 GET /tasks/{task_id} 获取结果。
+    """
+    task_id = task_manager.submit(
+        _do_read_multi_instruments, body.model_dump(),
+    )
+    return {"task_id": task_id, "status": "pending", "message": "任务已提交，请轮询 /tasks/{task_id} 获取结果"}
 
 
 @app.get("/config/camera-instruments")
