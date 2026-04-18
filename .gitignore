@@ -19,3 +19,8 @@ clip_library.json
 test_img/
 *.xlsx
 experiments.db
+models/
+*.pt
+*.pth
+*.bin
+*.ckpt
