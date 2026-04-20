@@ -115,7 +115,7 @@ class CLIPInstrumentMatcher:
             outputs = self.model.vision_model(**inputs)
             query_features = self.model.visual_projection(outputs.pooler_output)
             query_features = query_features / query_features.norm(p=2, dim=-1, keepdim=True)
-            query_embedding = query_features.cpu().numpy()
+            query_embedding = query_features.cpu().numpy()[0]
 
         best_match = {
             'matched': False,

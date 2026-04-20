@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { Experiment, ExperimentSummary, ExperimentType, CameraFieldConfig, ManualParams, LLMStatus } from '@/types'
+import { Experiment, ExperimentSummary, ExperimentType, InstrumentFieldConfig, ManualParams, LLMStatus } from '@/types'
 import { listExperiments, getExperiment, createExperiment, deleteExperiment, getMockConfig, setMockConfig, checkLLMStatus, getImageDir, setImageDir } from '@/lib/api'
 import ExperimentList from '@/components/ExperimentList'
 import Step1TypeSelector from '@/components/CreateExperiment/Step1TypeSelector'
@@ -64,7 +64,7 @@ export default function Dashboard() {
     setView('create_step2')
   }
 
-  const handleStep2Submit = async (manualParams: ManualParams, cameraConfigs: CameraFieldConfig[]) => {
+  const handleStep2Submit = async (manualParams: ManualParams, instrumentConfigs: InstrumentFieldConfig[]) => {
     if (!draftType) return
     setCreating(true)
     try {
@@ -72,7 +72,7 @@ export default function Dashboard() {
         name: draftName,
         type: draftType,
         manual_params: manualParams,
-        camera_configs: cameraConfigs,
+        instrument_configs: instrumentConfigs,
       })
       await loadList()
       await handleSelectExperiment(id)

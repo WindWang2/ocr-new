@@ -1,7 +1,7 @@
 """
 仪器读数识别系统
-使用 LMStudio 本地部署多模态模型（OpenAI 兼容 API）
-相机配置来源：相机.xlsx
+核心逻辑：YOLO26x 目标检测与分类 -> 自动裁剪特写 -> 多模态 LLM 读数
+后端支持：LMStudio (OpenAI 兼容 API)
 """
 
 import os
@@ -11,6 +11,7 @@ import logging
 import re
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, Type
+from PIL import Image
 from config import Config
 
 from pydantic import create_model, Field
@@ -36,6 +37,16 @@ def get_pydantic_model_for_instrument(instrument_type: str):
     return DynamicModel
 
 class DynamicInstrumentLibrary:
+    # 仪器到物理相机的路由映射 (F0-F8 -> 物理相机 ID)
+    INSTRUMENT_TO_CAMERA_ROUTE = {
+        0: 0, 1: 3, 2: 3, 3: 3, 4: 5, 5: 5, 6: 7, 7: 7, 8: 8
+    }
+
+    @classmethod
+    def get_physical_camera_id(cls, instrument_id: int) -> int:
+        """根据仪器 ID 获取对应的物理相机 ID"""
+        return cls.INSTRUMENT_TO_CAMERA_ROUTE.get(instrument_id, instrument_id)
+
     @classmethod
     def get_template(cls, instrument_type):
         t = get_template(instrument_type)
@@ -69,8 +80,13 @@ class DynamicInstrumentLibrary:
             return t['prompt_template']
         return ""
 
+    @classmethod
+    def get_camera_prompt(cls, camera_name: str) -> str:
+        """根据相机编号获取对应的 Prompt"""
+        return cls.INSTRUMENT_TEMPLATES.get(camera_name, "")
+
     # 相机编号到仪器的映射（来源：相机.xlsx）
-    CAMERA_PROMPTS = {
+    INSTRUMENT_TEMPLATES = {
         "F0": """这是超级吴英混调器（SN: 258795）控制屏幕。请先判断当前是自动模式还是手动模式（看左侧菜单哪个选项高亮），然后读取对应数值。
 
 自动模式字段：seg1_speed(段一转速,转)、seg1_time(段一时间,S)、seg2_speed(段二转速,转)、seg2_time(段二时间,S)、seg3_speed(段三转速,转)、seg3_time(段三时间,S)、total_time(总时长,S)、remaining_time(剩余时长,S)、current_segment(当前段数)、current_speed(当前转速,转)
@@ -162,8 +178,8 @@ class DynamicInstrumentLibrary:
     }
 
     @classmethod
-    def get_camera_prompt(cls, camera_name: str) -> str:
-        return cls.CAMERA_PROMPTS.get(camera_name.upper(), "")
+    def get_instrument_prompt(cls, camera_name: str) -> str:
+        return cls.INSTRUMENT_TEMPLATES.get(camera_name.upper(), "")
 
     @classmethod
     def get_instrument_type_from_camera(cls, camera_name: str, parsed: dict) -> str:
@@ -242,11 +258,11 @@ class MultimodalModelReader:
 
         logger.info("使用 LLM 后端, 模型: %s", self.model_name)
 
-    def analyze_image(self, image_path: str, prompt: str, call_type: str = "unknown", instrument_type: str = None) -> Dict[str, Any]:
+    def analyze_image(self, image_source: Union[str, Image.Image], prompt: str, call_type: str = "unknown", instrument_type: str = None) -> Dict[str, Any]:
         """使用多模态模型分析图片
 
         Args:
-            image_path: 图片路径
+            image_source: 图片路径或 PIL Image 对象
             prompt: 提示词
             call_type: 调用类型（identify/read），用于保存调试文件
             instrument_type: 仪器类型，若提供则执行 Pydantic 校验
@@ -255,7 +271,18 @@ class MultimodalModelReader:
             # 读取图片，统一转为 RGB JPEG 发送（兼容灰度图、BMP 等格式）
             from PIL import Image
             import io
-            img = Image.open(image_path).convert("RGB")
+            import os
+            
+            if isinstance(image_source, str):
+                try:
+                    img = Image.open(image_source).convert("RGB")
+                except Exception as e:
+                    return {"error": f"LLM_OPEN_ERR [{os.path.abspath(image_source)}]: {e}"}
+                image_path_str = image_source
+            else:
+                img = image_source.convert("RGB")
+                image_path_str = "memory_image"
+                
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=95)
             base64_images = [base64.b64encode(buf.getvalue()).decode('utf-8')]
@@ -295,7 +322,7 @@ class MultimodalModelReader:
                 logger.warning("分析失败或解析错误，原始响应: %s", result_text)
 
             # 保存响应到JSON文件（调试用）
-            self._save_response_debug(image_path, call_type, prompt, result_text, parsed)
+            self._save_response_debug(image_path_str, call_type, prompt, result_text, parsed)
 
             return parsed
         except Exception as e:
@@ -512,37 +539,126 @@ class InstrumentReader:
     def read_instrument(self, image_path: str, camera_name: str = None) -> Dict[str, Any]:
         """
         读取仪器读数。
-        若能确定相机名称（F0-F8），直接使用相机专用prompt（单步）；
-        否则退回两步识别流程。
+        首先使用 YOLO 检测目标，根据 class_id 确定仪器类型 (F0-F8)，
+        裁剪出对应的区域，然后调用多模态大模型进行读取。
 
         Args:
             image_path: 图片路径
-            camera_name: 可选，相机名称如 "F0"。为 None 时自动从路径推断。
+            camera_name: 可选，为兼容旧版保留，现主要通过 YOLO 决定。
         Returns:
-            包含识别结果的字典
+            包含识别结果的字典（如果检测到多个目标，返回一个包含多结果的字典列表或重构格式）
         """
         logger.info("处理图片: %s", image_path)
+        
+        from backend.services.yolo_detector import YOLOInstrumentDetector
+        from PIL import Image
+        import os
+        from pathlib import Path
+        
+        # Ensure path is absolute to avoid working directory issues
+        if not os.path.isabs(image_path):
+            base_dir = Path(__file__).parent
+            image_path = str(base_dir / "camera_images" / image_path)
+            if not os.path.exists(image_path):
+                 # Try directly under base_dir if the path already included camera_images
+                 fallback_path = str(base_dir / image_path.replace("camera_images/", ""))
+                 if os.path.exists(fallback_path):
+                     image_path = fallback_path
+                     
+        # 懒加载 YOLO 并在内存中保持（如果需要可以做成实例变量，但这里简单实例化）
+        if not hasattr(self, 'yolo_detector'):
+            logger.info("初始化 YOLO 检测器...")
+            # 注意：请确保 /home/kevin/projects/ocr-new/models/yolo_instrument.pt 存在
+            self.yolo_detector = YOLOInstrumentDetector(confidence_threshold=0.1, iou_threshold=0.15)
+            
+        try:
+            img = Image.open(image_path)
+            # Resize image similarly to how it was done in training if needed, but YOLO handles it
+        except Exception as e:
+            return {"success": False, "error": f"YOLO_IMAGE_OPEN_ERR [{image_path}]: {e}"}
 
-        # 尝试确定相机名称
-        if camera_name is None:
-            camera_name = self._extract_camera_name(image_path)
-
-        if camera_name and camera_name.upper() in DynamicInstrumentLibrary.CAMERA_PROMPTS:
-            return self._read_by_camera(image_path, camera_name.upper())
-        else:
+        detections = self.yolo_detector.detect(img)
+        
+        if not detections:
+            logger.warning("未检测到任何仪器目标，退回旧版全图识别流程...")
             return self._read_by_identification(image_path)
+            
+        logger.info(f"YOLO 检测到 {len(detections)} 个目标")
+        
+        all_results = []
+        for i, det in enumerate(detections):
+            x1, y1, x2, y2, yolo_conf, class_id = det
+            
+            # Map class_id to camera_name (e.g., 0 -> F0, 1 -> F1)
+            detected_camera_name = f"F{int(class_id)}"
+            logger.info(f"目标 {i+1}: 类别={detected_camera_name}, 置信度={yolo_conf:.2f}, 坐标=[{x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f}]")
+            
+            # Crop image
+            cropped_img = self.yolo_detector.crop_instrument(img, det, padding=15)
+            
+            # Save cropped image to camera_images/crops/
+            # Generate a unique name based on original image and class
+            orig_path = Path(image_path)
+            crops_dir = orig_path.parent / "crops"
+            crops_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create a safe, unique filename
+            timestamp = __import__("time").strftime("%H%M%S")
+            crop_filename = f"{orig_path.stem}_crop_{detected_camera_name}_{timestamp}.jpg"
+            crop_path = crops_dir / crop_filename
+            cropped_img.save(crop_path, "JPEG", quality=90)
+            
+            # Make the path relative to the camera_images root for the frontend
+            # The original path is typically camera_images/F0/xxx.jpg
+            # We want to return something like F0/crops/xxx.jpg
+            try:
+                # Find the index of camera_images in the path parts
+                parts = crop_path.parts
+                ci_idx = parts.index("camera_images")
+                relative_crop_path = "/".join(parts[ci_idx+1:])
+            except ValueError:
+                # Fallback if camera_images is not in path
+                relative_crop_path = f"crops/{crop_filename}"
+            
+            # Use specific prompt for this camera
+            if detected_camera_name in DynamicInstrumentLibrary.INSTRUMENT_TEMPLATES:
+                result = self._read_by_camera(cropped_img, detected_camera_name)
+            else:
+                # Fallback if somehow class_id is out of bounds
+                result = {"success": False, "error": f"未知的相机类型: {detected_camera_name}"}
+                
+            result["bbox"] = [x1, y1, x2, y2]
+            result["yolo_confidence"] = yolo_conf
+            result["class_id"] = int(class_id)
+            result["cropped_image_path"] = relative_crop_path
+            all_results.append(result)
+            
+        # Return the first result for backwards compatibility, or a composite result
+        # To avoid breaking existing downstream systems that expect a single dict:
+        # If there's only 1 target, return it directly. 
+        # If multiple, wrap them in a special dict.
+        if len(all_results) == 1:
+            return all_results[0]
+        else:
+            return {
+                "success": True,
+                "multiple_targets": True,
+                "instrument_name": "Multiple Instruments",
+                "readings": {f"target_{i}": res.get("readings", {}) for i, res in enumerate(all_results)},
+                "all_results": all_results,
+                "method": "yolo_multi_crop"
+            }
 
-    def _read_by_camera(self, image_path: str, camera_name: str) -> Dict[str, Any]:
+    def _read_by_camera(self, image_source: Union[str, Image.Image], camera_name: str) -> Dict[str, Any]:
         """使用相机专用prompt直接读取（单步，跳过识别）"""
         logger.info("相机 %s: 使用专用prompt直接读取", camera_name)
 
         # 在单步读取中，尝试预先确定仪器类型以支持 Pydantic 校验
-        # 注意：对于 F0 这样包含模式切换的，初步假设为 auto，校验失败也没关系
         mock_parsed = {"mode": "auto"} if camera_name == "F0" else {}
         instrument_type = DynamicInstrumentLibrary.get_instrument_type_from_camera(camera_name, mock_parsed)
 
-        prompt = DynamicInstrumentLibrary.get_camera_prompt(camera_name)
-        parsed = self.mm_reader.analyze_image(image_path, prompt, call_type="read", instrument_type=instrument_type)
+        prompt = DynamicInstrumentLibrary.get_instrument_prompt(camera_name)
+        parsed = self.mm_reader.analyze_image(image_source, prompt, call_type="read", instrument_type=instrument_type)
 
         if "error" in parsed:
             # 如果是 Pydantic 校验失败，尝试切换到 manual 模式再试一次 (针对 F0)
@@ -582,6 +698,18 @@ class InstrumentReader:
             import httpx
             from PIL import Image
             import io as _io
+            import os
+            # Ensure path is absolute
+            if not os.path.isabs(image_path):
+                base_dir = Path(__file__).parent
+                potential_path = str(base_dir / "camera_images" / image_path)
+                if os.path.exists(potential_path):
+                    image_path = potential_path
+                else:
+                    fallback = str(base_dir / image_path.replace("camera_images/", ""))
+                    if os.path.exists(fallback):
+                        image_path = fallback
+                        
             img = Image.open(image_path).convert("RGB")
             buf = _io.BytesIO()
             img.save(buf, format="JPEG", quality=95)

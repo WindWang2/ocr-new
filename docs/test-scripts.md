@@ -1,208 +1,76 @@
 # 测试脚本说明
 
-项目包含以下测试和验证脚本，均在项目根目录下运行。
+项目包含以下测试和验证脚本，均在项目根目录下运行。建议在 `dfine` Conda 环境中执行。
 
 ---
 
-## 1. `test_camera.py` — 相机 TCP 连接测试
+## 1. `read_instrument.py` — [核心] 集成推理测试
+
+这是目前最主要的测试脚本，模拟了完整的“检测-裁剪-精读”流程。它使用 YOLO26x 定位仪器，并自动调用本地 LLM 进行读数。
+
+```bash
+# 测试单张图片 (自动检测、裁剪并识别图中所有仪器)
+python read_instrument.py demo/1.jpg
+
+# 测试目录下所有图片
+python read_instrument.py demo/
+```
+
+**输出：**
+- 控制台输出识别到的仪器类别（F0-F8）、坐标、置信度以及具体的 JSON 读数。
+- `output/` 目录下会生成标注了检测框的图片。
+
+---
+
+## 2. `test_camera.py` — 相机 TCP 连接测试
 
 逐台测试相机控制端口的 TCP 连通性，发送拍照指令并接收响应。
-
-**依赖：** 无（仅 Python 标准库）
 
 ```bash
 # 测试所有相机 F0-F8
 python test_camera.py
-
-# 只测试指定相机
-python test_camera.py 0 3 5
-
-# 指定主机和端口基址
-python test_camera.py --host 192.168.31.127 --port 9000
-```
-
-**参数：**
-
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `0 1 2 ...` | 要测试的相机 ID | 0-8 全部 |
-| `--host` | 相机控制主机 | 127.0.0.1 |
-| `--port` | 端口基址（相机 N 的端口 = base + N） | 9000 |
-
-**输出示例：**
-```
-相机连接测试  2026-03-25 14:30:00
-目标: 127.0.0.1  端口基址: 9000
-测试相机: ['F0', 'F1', 'F2', 'F3']
-======================================================================
-  F0  127.0.0.1:9000  连接成功  2.1ms  响应: {"success":true,...}
-  F1  127.0.0.1:9001  连接成功  1.8ms  响应: {"success":true,...}
-  F2  127.0.0.1:9002  失败  连接被拒绝
-======================================================================
-结果: 2/3 台连接成功
 ```
 
 ---
 
-## 2. `test_read.py` — OCR 仪器读数测试
+## 3. `test_read.py` — OCR 读数专项测试 (旧版逻辑)
 
-对指定图片文件执行 OCR 识别，验证 LLM 模型的仪器识别和数值读取能力。
-
-**依赖：** `instrument_reader.py`、`llm_provider.py`、PIL
+对指定图片执行 OCR 识别。注意：此脚本主要走旧的“全图识别”逻辑，不带 YOLO 裁剪。
 
 ```bash
-# 用 4B 模型测试单张图片
-python test_read.py 4b demo/5-1.jpg
-
-# 用 4B 模型测试多张图片
-python test_read.py 4b demo/1-1.jpg demo/1-2.jpg
-
-# 用 2B 模型测试
-python test_read.py 2b demo/5-1.jpg demo/5-2.jpg
-```
-
-**参数：**
-
-| 位置 | 说明 |
-|------|------|
-| 第1个 | 模型名称（`4b` 或 `2b`） |
-| 第2个起 | 图片文件路径，支持多张 |
-
-**输出示例：**
-```
-==================================================
-图片: demo/5-1.jpg
-模型: 4b
-==================================================
-仪器: 表界面张力仪
-方法: camera_name
-读数:
-  tension: 28.531 nN/m
-  temperature: 25.1 °C
-  upper_density: 1.020 g/cm3
+# 用 2B 模型测试单张图片
+python test_read.py 2b demo/5-1.jpg
 ```
 
 ---
 
-## 3. `test_service.py` — 相机 TCP 服务模拟
+## 4. `tests/` 目录 — 单元测试与集成测试
 
-启动一个模拟 TCP 服务（端口 8889），接收拍照指令并返回模拟数据，用于验证服务端通信协议。
-
-**依赖：** 无（仅 Python 标准库）
+使用 `pytest` 运行标准测试套件。
 
 ```bash
-python test_service.py
-```
+# 运行全量测试
+python -m pytest tests/ -v
 
-脚本启动后会自动执行 4 项测试：
-
-1. 单相机模式 `VTFP,1`
-2. 批量实验 `VTFP,0,1,2`
-3. 全相机实验 `VTFP,0,1,...,8`
-4. 错误指令识别
-
-测试完成后服务自动关闭。
-
----
-
-## 4. `tests/test_multi_camera.py` — 多相机 API 测试
-
-通过 HTTP API 测试后端的实验创建、执行、查询和删除流程。
-
-**依赖：** 无（使用 `urllib`，无需安装额外包）
-
-**前提：** 后端服务需运行在 `http://127.0.0.1:8001`
-
-```bash
-python tests/test_multi_camera.py
-```
-
-**测试内容：**
-
-| 测试项 | 说明 |
-|--------|------|
-| 单相机创建/执行/详情 | 验证单相机实验完整流程 |
-| 1 相机批量 | camera_ids 数组格式兼容性 |
-| 3 相机批量 | 多相机实验执行和结果汇总 |
-| 5 相机批量 | 大批量相机处理 |
-| 实验列表分页 | limit/offset 参数 |
-| 删除实验 | 创建后删除并验证 |
-
-测试完成后在 `tests/TEST_REPORT.md` 生成报告。
-
----
-
-## 5. `tests/test_multi_camera_experiment.py` — 多相机异常流程测试
-
-覆盖正常流程和异常流程（部分相机失败）。
-
-**依赖：** 无
-
-**前提：** 后端服务需运行在 `http://127.0.0.1:8001`
-
-```bash
-python tests/test_multi_camera_experiment.py
-```
-
-**测试内容：**
-
-| 测试项 | 说明 |
-|--------|------|
-| 正常流程-多相机成功 | 3 台相机全部成功 |
-| 异常流程-部分失败 | 验证部分相机失败时的错误处理 |
-| 单相机兼容 | camera_id 字段向后兼容 |
-| 无指定相机 | 不指定相机时使用全部已启用相机 |
-| 实验列表分页 | 分页参数验证 |
-| 删除实验 | 删除后确认不可访问 |
-
----
-
-## demo 目录
-
-`demo/` 下存放各相机的样例图片，用于 OCR 调试：
-
-- `1.jpg` ~ `8.jpg`：各相机仪器屏幕截图
-- `5-1.jpg`、`5-2.jpg`：F5 表界面张力仪多次拍照
-- `origin/`：原始 BMP 格式图片（`F0`-`F8`）
-
----
-
-## 多仪器流水线测试
-
-### test_yolo_detector.py — YOLO 检测器单元测试
-
-测试 YOLO 目标检测器的初始化、检测和裁剪功能。
-
-```bash
+# 只测试 YOLO 检测器
 python -m pytest tests/test_yolo_detector.py -v
 ```
 
-### test_clip_matcher.py — CLIP 匹配器单元测试
+---
 
-测试 CLIP 仪器匹配器的初始化、缓存构建和嵌入提取。
+## 5. `visualizer.py` — 结果可视化工具
 
-```bash
-python -m pytest tests/test_clip_matcher.py -v
-```
-
-### test_multi_pipeline.py — 流水线单元测试
-
-测试三步流水线编排（YOLO→CLIP→LLM），使用 mock 隔离外部依赖。
+用于快速查看 YOLO 检测结果并验证 NMS 效果。
 
 ```bash
-python -m pytest tests/test_multi_pipeline.py -v
+# 可视化检测框
+python visualizer.py --image demo/1.jpg
 ```
 
-### test_full_pipeline_integration.py — 集成测试
+---
 
-验证所有组件初始化、多仪器检测流程和新 API 端点。
+## 目录说明
 
-```bash
-python -m pytest tests/test_full_pipeline_integration.py -v
-```
-
-### 全量测试
-
-```bash
-python -m pytest tests/ -v
-```
+- `demo/`：存放用于快速测试的 JPG 样例图。
+- `camera_images/`：存放真实/模拟相机拍摄的原始图片及自动生成的 `crops/` 裁剪图。
+- `output/`：存放测试脚本生成的标注结果图。

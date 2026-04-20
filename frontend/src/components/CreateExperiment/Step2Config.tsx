@@ -1,9 +1,9 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { ExperimentType, CameraFieldConfig, ManualParams } from '@/types'
+import { ExperimentType, InstrumentFieldConfig, ManualParams } from '@/types'
 import { EXPERIMENT_SCHEMAS } from '@/lib/experimentTypes'
 import { getCameraInstruments } from '@/lib/api'
-import { ArrowLeft, Camera, ChevronDown } from 'lucide-react'
+import { ArrowLeft, Cpu, ChevronDown } from 'lucide-react'
 
 const CAMERA_OPTIONS = Array.from({ length: 9 }, (_, i) => i)
 
@@ -11,7 +11,7 @@ interface Props {
   name: string
   type: ExperimentType
   onBack: () => void
-  onSubmit: (manualParams: ManualParams, cameraConfigs: CameraFieldConfig[]) => Promise<void>
+  onSubmit: (manualParams: ManualParams, instrumentConfigs: InstrumentFieldConfig[]) => Promise<void>
   loading: boolean
 }
 
@@ -20,52 +20,39 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
   const [manualParams, setManualParams] = useState<ManualParams>(() =>
     Object.fromEntries(schema.manualParams.map(p => [p.key, '']))
   )
-  const [cameraConfigs, setCameraConfigs] = useState<CameraFieldConfig[]>(() =>
-    schema.cameraFields.map(f => ({
+  const [instrumentConfigs, setInstrumentConfigs] = useState<InstrumentFieldConfig[]>(() =>
+    schema.instrumentFields.map(f => ({
       field_key: f.fieldKey,
-      camera_id: f.defaultCameraId,
+      instrument_id: f.targetInstrumentId,
       max_readings: f.maxReadings,
     }))
   )
   const [error, setError] = useState('')
 
-  // 相机仪器映射数据
+  // 仪器显示数据
   const [instruments, setInstruments] = useState<Record<string, { name: string; readings: { key: string; label: string; unit: string }[] }>>({})
   const [selectedReadings, setSelectedReadings] = useState<Record<number, string[]>>(() =>
-    Object.fromEntries(schema.cameraFields.map((f, i) => [i, []]))
+    Object.fromEntries(schema.instrumentFields.map((f, i) => [i, []]))
   )
-  // F0 专用：手动/自动模式（仅 test 类型 F0 字段使用）
+  // F0 专用：手动/自动模式
   const [f0Mode, setF0Mode] = useState<'auto' | 'manual'>('auto')
 
   useEffect(() => {
     getCameraInstruments().then(data => {
       setInstruments(data)
       const defaults: Record<number, string[]> = {}
-      schema.cameraFields.forEach((f, i) => {
-        const cameraId = cameraConfigs[i]?.camera_id ?? f.defaultCameraId
+      schema.instrumentFields.forEach((f, i) => {
         if (type === 'test') {
           // 测试模板默认选中所有读数
-          defaults[i] = (data[`F${cameraId}`]?.readings || []).map(r => r.key)
+          defaults[i] = (data[`F${f.targetInstrumentId}`]?.readings || []).map(r => r.key)
         } else {
-          // 三种模板实验默认只选 schema 中指定的一种读数
+          // 模板实验默认只选 schema 中指定的一种读数
           defaults[i] = [f.readingKey]
         }
       })
       setSelectedReadings(defaults)
     }).catch(() => {})
   }, [type])
-
-  const updateCamera = (index: number, cameraId: number) => {
-    setCameraConfigs(prev => prev.map((c, i) => i === index ? { ...c, camera_id: cameraId } : c))
-    if (type === 'test') {
-      const readings = instruments[`F${cameraId}`]?.readings || []
-      setSelectedReadings(prev => ({ ...prev, [index]: readings.map(r => r.key) }))
-    } else {
-      // 模板实验切换相机时保持只选当前字段的默认读数
-      const readingKey = schema.cameraFields[index]?.readingKey
-      setSelectedReadings(prev => ({ ...prev, [index]: readingKey ? [readingKey] : [] }))
-    }
-  }
 
   const toggleReading = (positionIndex: number, readingKey: string) => {
     setSelectedReadings(prev => {
@@ -79,8 +66,8 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
 
   const handleSubmit = async () => {
     setError('')
-    const configs = cameraConfigs.map((c, i) => {
-      const fieldKey = schema.cameraFields[i]?.fieldKey
+    const configs = instrumentConfigs.map((c, i) => {
+      const fieldKey = schema.instrumentFields[i]?.fieldKey
       const cfg: typeof c & { selected_readings: string[]; camera_mode?: string } = {
         ...c,
         selected_readings: selectedReadings[i] || [],
@@ -91,13 +78,13 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
     await onSubmit(manualParams, configs).catch(e => setError(e.message))
   }
 
-  const getInstrumentName = (cameraId: number) => {
-    const key = `F${cameraId}`
+  const getInstrumentName = (instrumentId: number) => {
+    const key = `F${instrumentId}`
     return instruments[key]?.name || ''
   }
 
-  const getReadings = (cameraId: number) => {
-    const key = `F${cameraId}`
+  const getReadings = (instrumentId: number) => {
+    const key = `F${instrumentId}`
     return instruments[key]?.readings || []
   }
 
@@ -133,27 +120,28 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
         </div>
       )}
 
-      {/* Camera binding */}
+      {/* Instrument Selection (Auto-bound) */}
       <div className="rounded-xl p-5 space-y-3 border" style={{ background: 'var(--brand-light)', borderColor: 'rgba(46,94,170,0.15)' }}>
         <div className="flex items-center gap-2">
-          <Camera size={14} className="text-brand-500" />
-          <h3 className="text-xs font-semibold text-brand-600 uppercase tracking-wider">相机绑定</h3>
+          <Cpu size={14} className="text-brand-500" />
+          <h3 className="text-xs font-semibold text-brand-600 uppercase tracking-wider">仪器配置</h3>
         </div>
-        {schema.cameraFields.map((field, idx) => {
-          const cameraId = cameraConfigs[idx]?.camera_id ?? 0
-          const instrumentName = getInstrumentName(cameraId)
-          const readings = getReadings(cameraId)
+        <p className="text-[11px] text-gray-400 mb-2">系统将自动定位以下仪器并读取数据</p>
+        
+        {schema.instrumentFields.map((field, idx) => {
+          const instrumentId = field.targetInstrumentId
+          const instrumentName = getInstrumentName(instrumentId)
+          const readings = getReadings(instrumentId)
           const selected = selectedReadings[idx] || []
           const isF0 = field.fieldKey === 'F0'
           return (
-            <div key={field.fieldKey} className="bg-white/60 rounded-lg px-3 py-3 space-y-2.5">
+            <div key={field.fieldKey} className="bg-white/60 rounded-lg px-3 py-3 space-y-2.5 border border-gray-100/50">
               <div className="flex items-center gap-3">
                 <div className="flex-1">
                   <div className="text-sm font-medium text-gray-700">{field.label}</div>
-                  {instrumentName && <div className="text-[11px] text-brand-500">{instrumentName}</div>}
-                  {field.description && (
-                    <div className="text-[11px] text-gray-400 mt-0.5 leading-relaxed">{field.description}</div>
-                  )}
+                  <div className="text-[11px] font-mono text-brand-500 uppercase tracking-tighter">
+                    {instrumentName || `仪器类别 #${instrumentId}`}
+                  </div>
                 </div>
                 {/* F0 专用：自动/手动模式选择 */}
                 {isF0 && (
@@ -176,23 +164,11 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
                     >手动模式</button>
                   </div>
                 )}
-                <select
-                  value={cameraId}
-                  onChange={e => updateCamera(idx, Number(e.target.value))}
-                  disabled={type === 'test'}
-                  className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-sm disabled:opacity-50 cursor-pointer"
-                >
-                  {CAMERA_OPTIONS.map(c => (
-                    <option key={c} value={c}>
-                      F{c} {instruments[`F${c}`]?.name || ''}
-                    </option>
-                  ))}
-                </select>
               </div>
               {/* 读数选择 */}
               {readings.length > 0 && (
                 <div className="ml-1">
-                  <div className="text-[11px] text-gray-500 mb-1.5">选择需要显示的读数：</div>
+                  <div className="text-[11px] text-gray-500 mb-1.5 font-medium">展示字段：</div>
                   <div className="flex flex-wrap gap-1.5">
                     {readings.map(r => {
                       const isSelected = selected.includes(r.key)

@@ -1,3 +1,4 @@
+import re
 """
 OCR 实验 API 服务
 
@@ -18,6 +19,7 @@ from typing import List, Optional
 from datetime import datetime
 import logging
 import json
+import re
 import io
 import os
 import openpyxl
@@ -75,8 +77,8 @@ app.add_middleware(
 )
 
 # 静态文件：挂载图片目录，供前端访问拍照图片
-_images_dir = Path("camera_images")
-_images_dir.mkdir(exist_ok=True)
+_images_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "camera_images")))
+_images_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/images", StaticFiles(directory=str(_images_dir)), name="images")
 
 async def image_cleanup_task():
@@ -425,7 +427,8 @@ def capture_image_endpoint(exp_id: int, body: ExperimentCaptureBody):
 
 class ExperimentRunTestBody(BaseModel):
     field_key: str
-    camera_id: int
+    camera_id: int                      # 物理相机 ID (用于触发拍照)
+    target_instrument_id: Optional[int] = None # 目标仪器类别 ID (0-8, 用于 YOLO 过滤)
     image_path: Optional[str] = None
     reading_key: Optional[str] = None   # 仪器读数键，如 "actual_reading"、"tension"
     run_index: Optional[int] = None     # 槽位序号（0-based），不传则追加
@@ -443,6 +446,17 @@ def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
     if not experiment:
         raise HTTPException(status_code=404, detail="实验不存在")
 
+    # 1. 确定目标仪器 ID 和对应的物理相机 (解耦核心)
+    target_instrument_id = body.target_instrument_id
+    if target_instrument_id is None:
+        match = re.search(r'F(\d+)', body.field_key)
+        if match: target_instrument_id = int(match.group(1))
+        else: target_instrument_id = body.camera_id
+
+    # 自动根据仪器 ID 路由到物理相机
+    from instrument_reader import DynamicInstrumentLibrary
+    physical_camera_id = DynamicInstrumentLibrary.get_physical_camera_id(target_instrument_id)
+
     saved_image_path = body.image_path
 
     if not saved_image_path:
@@ -451,49 +465,41 @@ def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
         try:
             image_dir = get_config("image_dir", default=None) or None
             if mock_enabled:
-                client = MockCameraClient(camera_id=body.camera_id, image_dir=image_dir)
+                from backend.services.mock_camera import MockCameraClient
+                client = MockCameraClient(camera_id=physical_camera_id, image_dir=image_dir)
                 success, result = client.capture_image()
             else:
+                from backend.services.camera_control import CameraClient
                 camera_config = Config.get_camera_config()
-                if image_dir:
-                    camera_config["image_dir"] = image_dir
-                client = CameraClient(camera_id=body.camera_id, config=camera_config)
-                success, result = client.trigger_and_read()
+                if image_dir: camera_config["image_dir"] = image_dir
+                client = CameraClient(camera_id=physical_camera_id, config=camera_config)
+                success, result = client.capture_image()
         except Exception as e:
-            logger.error(f"相机 {body.camera_id} 拍照失败: {e}")
+            logger.error(f"物理相机 {physical_camera_id} (仪器 F{target_instrument_id}) 拍照失败: {e}")
             return {"success": False, "detail": f"相机连接失败: {e}"}
 
         if not success:
-            return {"success": False, "detail": result.get("error", "OCR 识别失败")}
+            return {"success": False, "detail": result.get("error", "拍照失败")}
 
         raw_image_path = result.get("image_path")
         if raw_image_path:
-            saved_image_path = _convert_and_save_image(raw_image_path, body.camera_id, 0)
+            saved_image_path = _convert_and_save_image(raw_image_path, physical_camera_id, 0)
 
     if not saved_image_path:
         return {"success": False, "detail": "无可用图片"}
 
     # 对保存的图片做 OCR
-    full_image_path = str(_images_dir / saved_image_path)
+    import os
+    full_image_path = os.path.abspath(str(_images_dir / saved_image_path))
+    logger.info(f"==> DBUG: full_image_path in main.py is: {full_image_path}")
     try:
         from instrument_reader import InstrumentReader, DynamicInstrumentLibrary
         from backend.services.llm_provider import get_global_provider
         reader = InstrumentReader(provider=get_global_provider())
-        if body.camera_mode and body.camera_id == 0:
-            # F0 指定模式：直接使用 auto/manual 专用 prompt，跳过自动判断
-            instrument_type = f"wuying_mixer_{body.camera_mode}"
-            prompt = DynamicInstrumentLibrary.get_instrument_prompt(instrument_type)
-            parsed = reader.mm_reader.analyze_image(full_image_path, prompt, call_type="read")
-            if "error" in parsed:
-                ocr_result = {"success": False, "error": parsed["error"]}
-            else:
-                ocr_result = {"success": True, "readings": parsed, "instrument_type": instrument_type}
-        elif body.precise:
-            # 精准模式：OCR提取文字 → 识别仪器类型 → 二次读数
-            ocr_result = reader._read_by_identification(full_image_path)
-        else:
-            # 快速模式：相机专用prompt直接读数
-            ocr_result = reader.read_instrument(full_image_path)
+        
+        # 使用全新 YOLO 多目标识别逻辑
+        ocr_result = reader.read_instrument(full_image_path)
+        
     except Exception as e:
         logger.error(f"OCR 失败: {e}")
         return {"success": False, "detail": f"OCR 识别失败: {e}"}
@@ -501,90 +507,101 @@ def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
     if not ocr_result.get("success"):
         return {"success": False, "detail": ocr_result.get("error", "OCR 识别失败")}
 
-    # 解析 OCR 返回的所有读数（仪器原始键值对）
-    raw_response = ocr_result.get("readings", {})
-    if isinstance(raw_response, dict):
-        readings_dict = raw_response
-    elif isinstance(raw_response, str):
-        try:
-            readings_dict = json.loads(raw_response)
-        except (json.JSONDecodeError, TypeError):
-            readings_dict = {}
-    else:
-        readings_dict = {}
+    # 2. 精准匹配与保存逻辑 (严格锁定目标仪器)
+    target_instrument_id = body.target_instrument_id
+    if target_instrument_id is None:
+        match = re.search(r'F(\d+)', body.field_key)
+        if match:
+            target_instrument_id = int(match.group(1))
 
-    # 过滤掉非数值（如 mode、date 字符串字段），同时保留 "MM:SS" 时间格式
-    numeric_ocr: dict = {}
+    best_target = None
+    all_results = ocr_result.get("all_results", []) if ocr_result.get("multiple_targets") else [ocr_result]
+    
+    # 优先匹配类别 ID 一致的
+    for t in all_results:
+        if target_instrument_id is not None:
+            if t.get("class_id") == target_instrument_id:
+                best_target = t
+                break
+        elif len(all_results) == 1:
+            best_target = all_results[0]
+            break
+
+    if not best_target:
+        return {"success": True, "detail": f"图中未检测到目标仪表 (ID:{target_instrument_id})", "all_ocr": {}, "readings": []}
+
+    # 3. 解析该目标的读数（物理隔离：只取该目标的内容）
+    raw_response = best_target.get("readings", {})
+    readings_dict = raw_response if isinstance(raw_response, dict) else {}
+    if isinstance(raw_response, str):
+        try: readings_dict = json.loads(raw_response)
+        except: readings_dict = {}
+
+    # 4. 强制白名单过滤 (杜绝天平出pH等灵异现象)
+    # 根据目标仪器的 ID 强制应用过滤规则
+    WHITELIST = {
+        0: ['mode', 'current_speed', 'total_time', 'remaining_time', 'seg1_speed', 'seg2_speed', 'seg3_speed'],
+        1: ['weight'],
+        2: ['weight'],
+        3: ['ph_value', 'temperature', 'pts'],
+        4: ['content_mg_l', 'transmittance', 'absorbance', 'test_value', 'blank_value'],
+        5: ['tension', 'temperature', 'upper_density', 'lower_density', 'rise_speed', 'fall_speed'],
+        6: ['rotation_speed', 'torque', 'time'],
+        7: ['temperature', 'time'],
+        8: ['actual_reading', 'max_reading', 'min_reading', 'rotation_speed', 'apparent_viscosity']
+    }
+    
+    current_whitelist = WHITELIST.get(target_instrument_id, [])
+    filtered_readings = {}
+    numeric_ocr = {}
+
     for k, v in readings_dict.items():
-        if v is None:
+        if v is None: continue
+        # 核心：不在白名单内的字段直接丢弃，不返回给前端
+        if target_instrument_id is not None and k not in current_whitelist:
             continue
+            
+        filtered_readings[k] = v
         str_val = str(v).strip()
+        
+        # 数值提取
         if k == "time" and ":" in str_val:
-            parts = str_val.split(":")
-            if len(parts) == 2:
-                try:
-                    numeric_ocr[k] = float(parts[0]) * 60 + float(parts[1])
-                except ValueError:
-                    pass
-        else:
             try:
-                numeric_ocr[k] = float(str_val)
-            except (ValueError, TypeError):
-                # "##.##" 类占位符视为 0；纯字符串（mode、date 等）跳过
-                if all(c in '#.-+ ' for c in str_val) and '#' in str_val:
-                    numeric_ocr[k] = 0.0
-                # 否则跳过
+                parts = str_val.split(":")
+                numeric_ocr[k] = float(parts[0]) * 60 + float(parts[1])
+                continue
+            except: pass
+        
+        clean_val = re.sub(r'[^\d\.\-]', '', str_val)
+        try:
+            if clean_val and clean_val != ".": numeric_ocr[k] = float(clean_val)
+        except: pass
 
-    if not numeric_ocr:
-        # 无数值字段（如仅有字符串字段），仍返回 all_ocr 供前端展示，不保存读数
-        return {"success": True, "detail": "OCR 未识别到可保存的数值", "all_ocr": readings_dict, "readings": []}
-
-    # 确定主读数键：优先使用请求中传入的 reading_key，
-    # 其次查相机配置的 selected_readings[0]，最后取第一个数值字段
+    # 5. 确定主值并保存
     primary_key = body.reading_key
     if not primary_key:
-        config = next(
-            (c for c in experiment["camera_configs"] if c["field_key"] == body.field_key),
-            None
-        )
-        selected = (config.get("selected_readings") or []) if config else []
+        config = next((c for c in experiment["camera_configs"] if c["field_key"] == body.field_key), None)
+        selected = config.get("selected_readings", []) if config else []
         primary_key = next((k for k in selected if k in numeric_ocr), None)
-    if not primary_key:
-        primary_key = next(iter(numeric_ocr), None)
+    
+    primary_value = numeric_ocr.get(primary_key, 0.0) if primary_key else 0.0
+    target_image_path = best_target.get("cropped_image_path", saved_image_path)
+    run_index = body.run_index if body.run_index is not None else len([r for r in experiment["readings"] if r["field_key"] == body.field_key])
 
-    primary_value = numeric_ocr.get(primary_key) if primary_key else None
-    if primary_value is None:
-        # 读数键不在 OCR 结果中，用 0 保存并附带提示
-        logger.warning(f"未找到读数键 '{primary_key}'，以 0 保存。OCR结果: {readings_dict}")
-        primary_value = 0.0
-
-    # 确定 run_index：使用前端传入值（0-based），否则追加
-    if body.run_index is not None:
-        run_index = body.run_index
-    else:
-        existing = [r for r in experiment["readings"] if r["field_key"] == body.field_key]
-        run_index = len(existing)   # 0-based
-
-    # 保存主读数，field_key 使用实验字段名（不是仪器键名）
     reading = upsert_reading(
         experiment_id=exp_id,
         field_key=body.field_key,
         camera_id=body.camera_id,
         value=primary_value,
         run_index=run_index,
-        image_path=saved_image_path,
+        image_path=target_image_path,
     )
-
-    # 若 primary_value 为 0 且原始 OCR 中无该键，附加提示
-    detail = None
-    if primary_key and primary_key not in readings_dict:
-        detail = f"未找到读数键 '{primary_key}'，已以 0 保存"
 
     return {
         "success": True,
         "readings": [reading],
-        "all_ocr": readings_dict,   # 完整 OCR 结果，前端用于在图片下方展示所有读数
-        **({"detail": detail} if detail else {}),
+        "all_ocr": filtered_readings, # 返回极其纯净的结果
+        "detail": None if (primary_key and primary_key in numeric_ocr) else "已精准捕获仪器特写，但读数需校对"
     }
 
 
@@ -706,23 +723,14 @@ def _do_run_test_capture(exp_id: int, body_dict: dict):
         return {"success": False, "detail": "无可用图片"}
 
     # OCR
-    full_image_path = str(_images_dir / saved_image_path)
+    import os
+    full_image_path = os.path.abspath(str(_images_dir / saved_image_path))
     try:
         from instrument_reader import InstrumentReader, DynamicInstrumentLibrary
         from backend.services.llm_provider import get_global_provider
         reader = InstrumentReader(provider=get_global_provider())
-        if camera_mode and camera_id == 0:
-            instrument_type = f"wuying_mixer_{camera_mode}"
-            prompt = DynamicInstrumentLibrary.get_instrument_prompt(instrument_type)
-            parsed = reader.mm_reader.analyze_image(full_image_path, prompt, call_type="read")
-            if "error" in parsed:
-                ocr_result = {"success": False, "error": parsed["error"]}
-            else:
-                ocr_result = {"success": True, "readings": parsed, "instrument_type": instrument_type}
-        elif precise:
-            ocr_result = reader._read_by_identification(full_image_path)
-        else:
-            ocr_result = reader.read_instrument(full_image_path)
+        
+        ocr_result = reader.read_instrument(full_image_path)
     except Exception as e:
         logger.error(f"OCR 失败: {e}")
         return {"success": False, "detail": f"OCR 识别失败: {e}"}
@@ -730,79 +738,94 @@ def _do_run_test_capture(exp_id: int, body_dict: dict):
     if not ocr_result.get("success"):
         return {"success": False, "detail": ocr_result.get("error", "OCR 识别失败")}
 
-    raw_response = ocr_result.get("readings", {})
-    if isinstance(raw_response, dict):
-        readings_dict = raw_response
-    elif isinstance(raw_response, str):
-        try:
-            readings_dict = json.loads(raw_response)
-        except (json.JSONDecodeError, TypeError):
-            readings_dict = {}
-    else:
-        readings_dict = {}
+    # 2. 精准匹配与保存逻辑 (异步版同步对齐)
+    target_id = target_instrument_id
+    if target_id is None:
+        match = re.search(r'F(\d+)', field_key)
+        if match: target_id = int(match.group(1))
 
-    numeric_ocr: dict = {}
+    best_target = None
+    all_results = ocr_result.get("all_results", []) if ocr_result.get("multiple_targets") else [ocr_result]
+    
+    for t in all_results:
+        if target_id is not None:
+            if t.get("class_id") == target_id:
+                best_target = t
+                break
+        elif len(all_results) == 1:
+            best_target = all_results[0]
+            break
+
+    if not best_target:
+        return {"success": True, "detail": f"图中未检测到对应仪表 (ID:{target_id})", "all_ocr": {}, "readings": []}
+
+    # 3. 解析该目标的读数
+    raw_response = best_target.get("readings", {})
+    readings_dict = raw_response if isinstance(raw_response, dict) else {}
+    if isinstance(raw_response, str):
+        try: readings_dict = json.loads(raw_response)
+        except: readings_dict = {}
+
+    # 4. 强制白名单过滤 (杜绝跨仪器干扰)
+    WHITELIST = {
+        0: ['mode', 'current_speed', 'total_time', 'remaining_time', 'seg1_speed', 'seg2_speed', 'seg3_speed'],
+        1: ['weight'],
+        2: ['weight'],
+        3: ['ph_value', 'temperature', 'pts'],
+        4: ['content_mg_l', 'transmittance', 'absorbance', 'test_value', 'blank_value'],
+        5: ['tension', 'temperature', 'upper_density', 'lower_density', 'rise_speed', 'fall_speed'],
+        6: ['rotation_speed', 'torque', 'time'],
+        7: ['temperature', 'time'],
+        8: ['actual_reading', 'max_reading', 'min_reading', 'rotation_speed', 'apparent_viscosity']
+    }
+    
+    current_whitelist = WHITELIST.get(target_id, [])
+    filtered_readings = {}
+    numeric_ocr = {}
+
     for k, v in readings_dict.items():
-        if v is None:
-            continue
+        if v is None: continue
+        if target_id is not None and k not in current_whitelist: continue
+            
+        filtered_readings[k] = v
         str_val = str(v).strip()
         if k == "time" and ":" in str_val:
-            parts = str_val.split(":")
-            if len(parts) == 2:
-                try:
-                    numeric_ocr[k] = float(parts[0]) * 60 + float(parts[1])
-                except ValueError:
-                    pass
-        else:
             try:
-                numeric_ocr[k] = float(str_val)
-            except (ValueError, TypeError):
-                if all(c in '#.-+ ' for c in str_val) and '#' in str_val:
-                    numeric_ocr[k] = 0.0
+                parts = str_val.split(":")
+                numeric_ocr[k] = float(parts[0]) * 60 + float(parts[1])
+                continue
+            except: pass
+        clean_val = re.sub(r'[^\d\.\-]', '', str_val)
+        try:
+            if clean_val and clean_val != ".": numeric_ocr[k] = float(clean_val)
+        except: pass
 
-    if not numeric_ocr:
-        return {"success": True, "detail": "OCR 未识别到可保存的数值", "all_ocr": readings_dict, "readings": []}
-
-    primary_key = reading_key
-    if not primary_key:
-        config = next(
-            (c for c in experiment["camera_configs"] if c["field_key"] == field_key),
-            None
-        )
-        selected = (config.get("selected_readings") or []) if config else []
-        primary_key = next((k for k in selected if k in numeric_ocr), None)
-    if not primary_key:
-        primary_key = next(iter(numeric_ocr), None)
-
-    primary_value = numeric_ocr.get(primary_key) if primary_key else None
-    if primary_value is None:
-        logger.warning(f"未找到读数键 '{primary_key}'，以 0 保存。OCR结果: {readings_dict}")
-        primary_value = 0.0
-
-    if run_index_body is not None:
-        run_index = run_index_body
-    else:
-        existing = [r for r in experiment["readings"] if r["field_key"] == field_key]
-        run_index = len(existing)
+    # 5. 确定主值并保存
+    primary_key_final = reading_key
+    if not primary_key_final:
+        config = next((c for c in experiment["camera_configs"] if c["field_key"] == field_key), None)
+        selected = config.get("selected_readings", []) if config else []
+        primary_key_final = next((k for k in selected if k in numeric_ocr), None)
+    
+    primary_value = numeric_ocr.get(primary_key_final, 0.0) if primary_key_final else 0.0
+    target_image_path = best_target.get("cropped_image_path", saved_image_path)
+    
+    run_idx = run_index_body if run_index_body is not None else len([r for r in experiment["readings"] if r["field_key"] == field_key])
 
     reading = upsert_reading(
         experiment_id=exp_id,
         field_key=field_key,
         camera_id=camera_id,
         value=primary_value,
-        run_index=run_index,
-        image_path=saved_image_path,
+        run_index=run_idx,
+        image_path=target_image_path,
     )
-
-    detail = None
-    if primary_key and primary_key not in readings_dict:
-        detail = f"未找到读数键 '{primary_key}'，已以 0 保存"
 
     return {
         "success": True,
         "readings": [reading],
-        "all_ocr": readings_dict,
-        **({"detail": detail} if detail else {}),
+        "all_ocr": filtered_readings,
+        "detail": None if (primary_key_final and primary_key_final in numeric_ocr) else "已精准锁定特写，请核对读数"
     }
 
 
@@ -869,6 +892,11 @@ def _do_read_multi_instruments(body_dict: dict):
     except Exception as e:
         logger.error(f"Pipeline processing failed: {e}")
         return {"success": False, "detections": [], "detail": f"Processing failed: {str(e)}"}
+
+
+class ReadMultiRequest(BaseModel):
+    image_path: Optional[str] = None
+    camera_id: Optional[int] = None
 
 
 @app.post("/api/read-multi-async")
@@ -1535,11 +1563,6 @@ def get_system_config():
 
 
 # ==================== Multi-Instrument Pipeline API ====================
-
-class ReadMultiRequest(BaseModel):
-    image_path: Optional[str] = None
-    camera_id: Optional[int] = None
-
 
 @app.post("/api/read-multi")
 def read_multi_instruments(body: ReadMultiRequest):

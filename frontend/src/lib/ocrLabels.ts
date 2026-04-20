@@ -28,6 +28,8 @@ export const OCR_KEY_LABELS: Record<string, string> = {
   transmittance:   '透光度',
   // F5 表界面张力仪
   tension:         '张力',
+  interfacial_tension: '界面张力',
+  contact_angle:   '接触角',
   upper_density:   '上层密度',
   lower_density:   '下层密度',
   rise_speed:      '上升速度',
