@@ -4,9 +4,9 @@ export type ExperimentType =
   | 'surface_tension'
   | 'test'
 
-export interface CameraFieldConfig {
+export interface InstrumentFieldConfig {
   field_key: string
-  camera_id: number
+  instrument_id: number // 对应 YOLO 类别 0-8
   max_readings: number
   selected_readings?: string[]
   camera_mode?: string  // F0专用：'auto' | 'manual'
@@ -32,7 +32,7 @@ export interface Experiment {
   name: string
   type: ExperimentType
   manual_params: ManualParams
-  camera_configs: CameraFieldConfig[]
+  instrument_configs: InstrumentFieldConfig[] // 替代 camera_configs
   readings: Reading[]
   created_at: string
 }

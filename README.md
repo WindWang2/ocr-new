@@ -4,42 +4,38 @@
 
 ## 功能特性
 
-- **多仪器检测流水线** — YOLO 目标检测定位多仪器 + CLIP 仪器类型匹配 + LLM 读数提取，支持单张图片多仪器同时识别
-- **多仪表类型识别** — 支持运动粘度计、旋转粘度计、表面张力仪等 17 种实验室仪器
-- **多模态 OCR** — 通过 LMStudio（OpenAI 兼容 API）调用视觉语言模型进行仪表读数识别
-- **LLM 模型切换** — 前端下拉菜单实时切换模型，支持本地 LMStudio 和远程 OpenAI 兼容服务
-- **实验管理** — 三种实验类型（运动粘度、表观粘度、表面/界面张力），支持创建、执行、导出 Excel
-- **Mock 相机模式** — 读取本地图片进行 OCR 测试，无需连接真实相机
-- **连接状态指示** — Settings 按钮实时显示 LLM 服务连接状态
+- **全新 YOLO26x 多目标检测** — 集成旗舰级 YOLO26x 模型，支持高精度多目标定位。
+- **自动裁剪与精读** — 系统自动从原始全景图中抠出每个仪器的特写，并送往大模型，显著提升识别率。
+- **相机与仪器解耦** — 不再依赖 F0-F8 与特定仪器的硬绑定。单次拍照支持识别图中所有已知仪器（类别 0-8）。
+- **手动 NMS 压制** — 针对 E2E 模型特别优化，强制手动 Non-Maximum Suppression，彻底消除重叠框干扰。
+- **多仪器检测流水线** — YOLO 自动识别定位 -> 智能裁剪 -> LLM 针对性读数提取，支持单张图片包含多台设备。
+- **多仪表类型识别** — 支持运动粘度计、旋转粘度计、表面张力仪等实验室主流仪器。
+- **多模态 OCR** — 通过 LMStudio（OpenAI 兼容 API）调用本地视觉大语言模型（如 Qwen2-VL）。
+- **实验管理** — 完整支持三种实验类型（运动粘度、表观粘度、表面/界面张力）的流程化采集与 Excel 导出。
+- **Mock 相机模式** — 支持读取本地图片目录进行全流程模拟测试。
 
 ## 项目结构
 
 ```
 ├── backend/
-│   ├── api/main.py              # FastAPI 后端服务 (端口 8001)
-│   ├── models/database.py       # SQLite 数据模型
+│   ├── api/main.py              # FastAPI 后端服务 (支持多目标处理逻辑)
+│   ├── models/database.py       # SQLite 数据持久化
 │   └── services/
-│       ├── llm_provider.py      # LLM 抽象层 (OpenAI 兼容)
-│       ├── camera_control.py    # 真实相机 TCP 客户端
-│       ├── mock_camera.py       # Mock 相机 (本地图片 OCR)
-│       ├── yolo_detector.py     # YOLO 目标检测 (多仪器定位)
-│       ├── clip_matcher.py      # CLIP 仪器类型匹配
-│       └── multi_instrument_pipeline.py  # 多仪器检测流水线
-├── frontend/                    # Next.js 14 前端
+│       ├── llm_provider.py      # 多模态 LLM 抽象适配层
+│       ├── camera_control.py    # 工业相机触发控制
+│       ├── mock_camera.py       # 本地模拟相机服务
+│       ├── yolo_detector.py     # YOLO26x 核心引擎 (含手动 NMS 优化)
+│       └── multi_instrument_pipeline.py  # 复合检测识别流
+├── frontend/                    # Next.js 14 Web 前端
 │   └── src/
-│       ├── app/page.tsx         # 主页面
-│       ├── components/
-│       │   ├── SettingsPanel/   # 系统设置 (LLM 模型选择)
-│       │   ├── ExperimentDetail/# 实验详情与拍照识别
-│       │   └── CreateExperiment/# 实验创建向导
-│       ├── lib/api.ts           # 后端 API 客户端
-│       └── types/index.ts       # TypeScript 类型定义
-├── models/                      # YOLO 权重 + CLIP 嵌入缓存
-├── instrument_reader.py         # OCR 核心引擎 (两步识别: 仪器分类 → 读数提取)
-├── config.py                    # 系统默认配置
-├── camera_images/F0~F8/         # Mock 相机图片目录
-├── start-backend.sh             # 启动后端
-└── start-frontend.sh            # 启动前端
+│       ├── app/page.tsx         # 实验执行主看板
+│       └── components/
+│           └── ExperimentDetail/# 实验详情 (支持展示裁剪后的仪器特写)
+├── models/
+│   └── yolo_instrument.pt       # 训练好的 YOLO26x 旗舰权重 (最佳)
+├── instrument_reader.py         # 核心识别驱动 (支持 YOLO + 多目标裁剪流)
+├── config.py                    # 系统参数配置
+└── camera_images/               # 拍照图片与自动生成的 crops/ 裁剪目录
 ```
 
 ## 快速开始
@@ -49,7 +45,7 @@
 ```bash
 # 后端
 pip install -r requirements.txt
-# 新增依赖: ultralytics (YOLO), transformers (CLIP), torch (PyTorch)
+# 核心依赖: ultralytics (YOLO), torch, torchvision, fastapi, pydantic
 
 # 前端
 cd frontend && npm install

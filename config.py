@@ -23,7 +23,7 @@ class Config:
     """系统配置（支持环境变量覆盖）"""
 
     # LMStudio 配置（OpenAI 兼容 API）
-    LMSTUDIO_BASE_URL = _env("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234")
+    LMSTUDIO_BASE_URL = _env("LMSTUDIO_BASE_URL", "http://192.168.31.127:1234")
     LMSTUDIO_MODEL = _env("LMSTUDIO_MODEL", "2b-new")
     LMSTUDIO_OCR_MODEL = _env("LMSTUDIO_OCR_MODEL", "ocr")
     DEFAULT_LLM_PROVIDER = _env("DEFAULT_LLM_PROVIDER", "openai_compatible")

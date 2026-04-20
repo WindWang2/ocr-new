@@ -9,6 +9,7 @@ interface Props {
   experimentId: number
   fieldKey: string
   cameraId: number
+  targetInstrumentId: number
   slotIndex: number
   readingKey: string
   label: string
@@ -21,7 +22,7 @@ interface Props {
 }
 
 export default function CaptureSlot({
-  experimentId, fieldKey, cameraId, slotIndex, readingKey,
+  experimentId, fieldKey, cameraId, targetInstrumentId, slotIndex, readingKey,
   label, unit, reading, onComplete, disabled = false,
   cameraLabel, compact = false,
 }: Props) {
@@ -56,7 +57,7 @@ export default function CaptureSlot({
 
       setPhase('recognizing')
       const result = await runTestCapture(
-        experimentId, fieldKey, cameraId, image_path, readingKey, slotIndex
+        experimentId, fieldKey, cameraId, image_path, readingKey, slotIndex, false, undefined, targetInstrumentId
       )
       if (result.all_ocr) setAllOcr(result.all_ocr)
       if (!result.success) {
@@ -83,7 +84,7 @@ export default function CaptureSlot({
     setPrecising(true)
     try {
       const result = await runTestCapture(
-        experimentId, fieldKey, cameraId, imgPath, readingKey, slotIndex, true
+        experimentId, fieldKey, cameraId, imgPath, readingKey, slotIndex, true, undefined, targetInstrumentId
       )
       if (result.all_ocr) setAllOcr(result.all_ocr)
       if (!result.success) {

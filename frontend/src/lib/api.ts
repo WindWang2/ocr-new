@@ -1,4 +1,4 @@
-import { Experiment, ExperimentSummary, Reading, CameraFieldConfig, ManualParams, ExperimentType, LLMConfig, LLMModel, LLMStatus, InstrumentTemplate } from '@/types'
+import { Experiment, ExperimentSummary, Reading, InstrumentFieldConfig, ManualParams, ExperimentType, LLMConfig, LLMModel, LLMStatus, InstrumentTemplate } from '@/types'
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || '/api'
 
@@ -25,19 +25,43 @@ export async function listExperiments(): Promise<ExperimentSummary[]> {
 }
 
 export async function getExperiment(id: number): Promise<Experiment> {
-  const data = await request<{ experiment: Experiment }>(`/experiments/${id}`)
-  return data.experiment
+  const data = await request<{ experiment: any }>(`/experiments/${id}`)
+  const exp = data.experiment
+  // 兼容性处理：将后端的 camera_configs 映射到前端的 instrument_configs
+  if (exp.camera_configs && !exp.instrument_configs) {
+    exp.instrument_configs = (exp.camera_configs || []).map((c: any) => ({
+      field_key: c.field_key,
+      instrument_id: c.camera_id, // 后端存的是 camera_id，映射给 instrument_id
+      max_readings: c.max_readings,
+      selected_readings: c.selected_readings,
+      camera_mode: c.camera_mode
+    }))
+  } else if (!exp.instrument_configs) {
+    exp.instrument_configs = []
+  }
+  return exp
 }
 
 export async function createExperiment(payload: {
   name: string
   type: ExperimentType
   manual_params: ManualParams
-  camera_configs: CameraFieldConfig[]
+  instrument_configs: InstrumentFieldConfig[]
 }): Promise<number> {
+  // 兼容性处理：发送给后端时转回 camera_configs
+  const backendPayload = {
+    ...payload,
+    camera_configs: (payload.instrument_configs || []).map(c => ({
+      field_key: c.field_key,
+      camera_id: c.instrument_id, // 前端的 instrument_id 对应后端的 camera_id
+      max_readings: c.max_readings,
+      selected_readings: c.selected_readings,
+      camera_mode: c.camera_mode
+    }))
+  }
   const data = await request<{ experiment_id: number }>('/experiments', {
     method: 'POST',
-    body: JSON.stringify(payload),
+    body: JSON.stringify(backendPayload),
   })
   return data.experiment_id
 }
@@ -50,16 +74,42 @@ export async function captureReading(
   experimentId: number,
   fieldKey: string,
   cameraId: number,
+  runIndex?: number,
 ): Promise<Reading> {
   const data = await request<{ success: boolean; reading?: Reading; detail?: string }>(
     `/experiments/${experimentId}/run`,
     {
       method: 'POST',
-      body: JSON.stringify({ field_key: fieldKey, camera_id: cameraId }),
+      body: JSON.stringify({ field_key: fieldKey, camera_id: cameraId, run_index: runIndex }),
     },
   )
   if (!data.success || !data.reading) throw new Error(data.detail || 'OCR 识别失败')
   return data.reading
+}
+
+/**
+ * [一键读取] 针对实验中配置的所有仪器执行扫描
+ */
+export async function runGlobalScan(
+  experiment: Experiment,
+): Promise<{ success: boolean; results: any[] }> {
+  // 找出所有唯一的 instrument_id
+  const configs = experiment.instrument_configs || []
+  
+  // 目前策略：每个 ID 对应一个物理相机路由。我们逐个或并发请求后端 /run
+  // 注意：后端目前逻辑是 /experiments/{id}/run 接收 camera_id。
+  // 我们暂时复用它，将 instrument_id 传给它。
+  
+  const promises = configs.map(config => 
+    captureReading(experiment.id, config.field_key, config.instrument_id)
+      .catch(e => {
+        console.error(`读取仪器 ${config.field_key} 失败:`, e)
+        return null
+      })
+  )
+  
+  const results = await Promise.all(promises)
+  return { success: true, results: results.filter(r => r !== null) }
 }
 
 export function exportUrl(experimentId: number): string {
@@ -123,6 +173,7 @@ export async function captureImage(
 interface RunTestBody {
   field_key: string
   camera_id: number
+  target_instrument_id?: number
   image_path?: string
   reading_key?: string
   run_index?: number
@@ -139,8 +190,10 @@ export async function runTestCapture(
   runIndex?: number,
   precise?: boolean,
   cameraMode?: string,
+  targetInstrumentId?: number,
 ): Promise<{ success: boolean; readings?: Reading[]; all_ocr?: Record<string, number | string | null>; detail?: string }> {
   const body: RunTestBody = { field_key: fieldKey, camera_id: cameraId }
+  if (targetInstrumentId !== undefined) body.target_instrument_id = targetInstrumentId
   if (imagePath) body.image_path = imagePath
   if (readingKey) body.reading_key = readingKey
   if (runIndex !== undefined) body.run_index = runIndex
