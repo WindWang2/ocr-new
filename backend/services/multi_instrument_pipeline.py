@@ -31,7 +31,7 @@ class MultiInstrumentPipeline:
     def __init__(
         self,
         yolo_model_path: str = None,
-        yolo_conf_threshold: float = 0.1, # Lower threshold for better sensitivity
+        yolo_conf_threshold: float = 0.2, # Adjusted to user requested 0.2
     ):
         self.yolo_detector = YOLOInstrumentDetector(
             model_path=yolo_model_path,
@@ -46,38 +46,37 @@ class MultiInstrumentPipeline:
         detections = self.yolo_detector.detect(image)
         results = []
 
-        # 字段白名单，确保数据隔离
-        WHITELIST = {
-            0: ['mode', 'current_speed', 'total_time', 'remaining_time', 'seg1_speed', 'seg2_speed', 'seg3_speed'],
-            1: ['weight'],
-            2: ['weight'],
-            3: ['ph_value', 'temperature', 'pts'],
-            4: ['content_mg_l', 'transmittance', 'absorbance', 'test_value', 'blank_value'],
-            5: ['tension', 'temperature', 'upper_density', 'lower_density', 'rise_speed', 'fall_speed'],
-            6: ['rotation_speed', 'torque', 'time'],
-            7: ['temperature', 'time'],
-            8: ['actual_reading', 'max_reading', 'min_reading', 'rotation_speed', 'apparent_viscosity']
-        }
+        # 从模板中提取字段
 
         for det in detections:
             x1, y1, x2, y2, yolo_conf, class_id = det
             class_id = int(class_id)
             camera_name = f"F{class_id}"
             
-            cropped = self.yolo_detector.crop_instrument(image, det, padding=15)
-            
-            # 直接通过 YOLO 类别获取 Prompt
-            prompt = DynamicInstrumentLibrary.get_camera_prompt(camera_name)
-            if not prompt:
-                logger.warning(f"No prompt found for class {class_id} (mapped to {camera_name})")
+            # 获取对应的模板
+            template = DynamicInstrumentLibrary.get_template(str(class_id))
+            if not template:
+                logger.warning(f"No template found for class {class_id} (mapped to {camera_name})")
                 continue
+
+            prompt = template.get('prompt_template')
+            if not prompt:
+                logger.warning(f"No prompt template found for class {class_id}")
+                continue
+            
+            cropped = self.yolo_detector.crop_instrument(image, det, padding=15)
 
             try:
                 # 调用大模型读取
                 raw_readings = self.reader.mm_reader.analyze_image(cropped, prompt, call_type='read')
+                print(f"\n[PIPELINE DEBUG] RAW_READINGS: {raw_readings}\n")
                 
-                # 应用白名单过滤，彻底解决“天平出pH”问题
-                allowed_fields = WHITELIST.get(class_id, [])
+                # 从数据库模板中提取允许的字段列表，确保数据隔离
+                # 兼容性处理：尝试 'fields' 和 'readings' 两个键名
+                fields_data = template.get('fields') or template.get('readings') or []
+                allowed_fields = [f['name'] for f in fields_data]
+                print(f"[PIPELINE DEBUG] ALLOWED_FIELDS: {allowed_fields}")
+
                 filtered_readings = {}
                 if not isinstance(raw_readings, dict):
                     raw_readings = {}
@@ -85,6 +84,8 @@ class MultiInstrumentPipeline:
                 for k, v in raw_readings.items():
                     if k in allowed_fields and v is not None:
                         filtered_readings[k] = v
+                
+                print(f"[PIPELINE DEBUG] FILTERED_READINGS: {filtered_readings}")
 
                 result = {
                     'bbox': [float(x1), float(y1), float(x2), float(y2)],
@@ -105,6 +106,4 @@ class MultiInstrumentPipeline:
         # This method is now legacy, using direct reading in process_image
         pass
 
-    def rebuild_clip_cache(self):
-        """Rebuild CLIP embedding cache after template changes"""
-        self.clip_matcher.invalidate_cache()
+

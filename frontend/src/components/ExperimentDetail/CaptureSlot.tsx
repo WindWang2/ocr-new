@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { Reading } from '@/types'
-import { captureImage, runTestCapture, saveManualReading } from '@/lib/api'
+import { captureImage, triggerInstrument, runTestCapture, saveManualReading } from '@/lib/api'
 import { ocrLabel } from '@/lib/ocrLabels'
 import { Camera, RefreshCw, RotateCcw, ScanSearch } from 'lucide-react'
 
@@ -27,7 +27,7 @@ export default function CaptureSlot({
   cameraLabel, compact = false,
 }: Props) {
   const [pendingImage, setPendingImage] = useState<string | null>(null)
-  const [phase, setPhase] = useState<'idle' | 'capturing' | 'recognizing'>('idle')
+  const [phase, setPhase] = useState<'idle' | 'capturing' | 'processing' | 'recognizing'>('idle')
   const [precising, setPrecising] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [warn, setWarn] = useState<string | null>(null)
@@ -55,11 +55,23 @@ export default function CaptureSlot({
       const { image_path } = await captureImage(experimentId, cameraId)
       if (image_path) setPendingImage(image_path)
 
-      setPhase('recognizing')
+      // 只要过了检测（YOLO），就更新裁剪图显示
+      if (image_path) {
+        setPhase('processing') // 进入处理阶段（检测中）
+        const detectRes = await triggerInstrument(experimentId, fieldKey, targetInstrumentId)
+        if (detectRes.success) {
+          const previewImg = detectRes.cropped_image_path || detectRes.image_path;
+          if (previewImg) setPendingImage(previewImg);
+        }
+      }
+
+      setPhase('processing') // 确保处于处理阶段（识别中）
       const result = await runTestCapture(
         experimentId, fieldKey, cameraId, image_path, readingKey, slotIndex, false, undefined, targetInstrumentId
       )
+      if (result.image_path) setPendingImage(result.image_path)
       if (result.all_ocr) setAllOcr(result.all_ocr)
+
       if (!result.success) {
         setError(result.detail || '识别失败')
       } else {
@@ -68,7 +80,7 @@ export default function CaptureSlot({
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '拍照失败')
-      setPendingImage(null)
+      // Removed setPendingImage(null) to preserve the captured/original image
     } finally {
       setPhase('idle')
     }
@@ -86,7 +98,9 @@ export default function CaptureSlot({
       const result = await runTestCapture(
         experimentId, fieldKey, cameraId, imgPath, readingKey, slotIndex, true, undefined, targetInstrumentId
       )
+      if (result.image_path) setPendingImage(result.image_path)
       if (result.all_ocr) setAllOcr(result.all_ocr)
+
       if (!result.success) {
         setError(result.detail || '精准识别失败')
       } else {

@@ -2,8 +2,11 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: '智能实验方舱 - 仪表自动抓拍识别系统',
-  description: '面向石油化工实验室的智能仪表读数采集系统，工业相机自动抓拍，AI 视觉识别精准提取读数',
+  title: 'WANGJ-OCR | 工业视觉智控中心',
+  description: '高精度工业仪表视觉识别系统 - 边缘计算与实时监测引擎',
+  icons: {
+    icon: '/favicon.ico',
+  }
 }
 
 export default function RootLayout({

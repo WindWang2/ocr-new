@@ -29,11 +29,20 @@ class MockCameraClient:
             self.image_dir = PROJECT_ROOT / "camera_images" / f"F{camera_id}"
 
     def _find_latest_image(self) -> Path | None:
-        """返回图片目录中（含子目录）修改时间最新的图片，找不到返回 None"""
+        """返回图片目录中修改时间最新的 .bmp 图片，忽略 crops 子目录"""
         if not self.image_dir.exists():
             return None
-        extensions = {".jpg", ".jpeg", ".png", ".bmp"}
-        images = [p for p in self.image_dir.rglob("*") if p.is_file() and p.suffix.lower() in extensions]
+            
+        # 寻找所有 .bmp 图片（包括大小写）
+        images = []
+        for pattern in ["*.bmp", "*.BMP"]:
+            # 使用 rglob 递归搜索，但后续过滤掉 crops 目录
+            for p in self.image_dir.rglob(pattern):
+                if p.is_file():
+                    # 排除 crops 目录及其子集
+                    if "crops" not in p.parts:
+                        images.append(p)
+                    
         if not images:
             return None
         return max(images, key=lambda p: p.stat().st_mtime)

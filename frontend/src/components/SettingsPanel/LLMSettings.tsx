@@ -1,9 +1,9 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { RefreshCw, ChevronDown } from 'lucide-react'
-import type { LLMConfig, LLMStatus, LLMProviderType, LLMModel } from '@/types'
-import { getLLMConfig, setLLMConfig, listLLMModels, checkLLMStatus } from '@/lib/api'
+import { RefreshCw, Cpu, Activity, Database, Settings2 } from 'lucide-react'
+import type { LLMConfig, LLMStatus, GPUInfo } from '@/types'
+import { getLLMConfig, setLLMConfig, checkLLMStatus } from '@/lib/api'
 
 interface LLMSettingsProps {
   onStatusChange?: (status: LLMStatus) => void
@@ -11,175 +11,190 @@ interface LLMSettingsProps {
 
 export default function LLMSettings({ onStatusChange }: LLMSettingsProps) {
   const [config, setConfig] = useState<LLMConfig | null>(null)
-  const [editing, setEditing] = useState<LLMConfig | null>(null)
-  const [models, setModels] = useState<LLMModel[]>([])
-  const [loadingModels, setLoadingModels] = useState(false)
+  const [engineStatus, setEngineStatus] = useState<{
+    status: LLMStatus
+    provider?: string
+    model?: string
+    gpu?: GPUInfo
+    detail?: string
+  } | null>(null)
+  const [loading, setLoading] = useState(true)
   const [applying, setApplying] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [showModelDropdown, setShowModelDropdown] = useState(false)
+
+  const refreshStatus = useCallback(async () => {
+    setLoading(true)
+    try {
+      const status = await checkLLMStatus()
+      setEngineStatus(status)
+      onStatusChange?.(status.status)
+    } catch (e) {
+      setEngineStatus({ status: 'error', detail: (e as Error).message })
+      onStatusChange?.('error')
+    } finally {
+      setLoading(false)
+    }
+  }, [onStatusChange])
 
   useEffect(() => {
-    getLLMConfig().then(c => {
-      setConfig(c)
-      setEditing(c)
-    })
-  }, [])
+    getLLMConfig().then(setConfig)
+    refreshStatus()
+  }, [refreshStatus])
 
-  const refreshModels = useCallback(async () => {
-    if (!editing) return
-    setLoadingModels(true)
-    setError(null)
-    try {
-      const list = await listLLMModels(editing.base_url)
-      setModels(list)
-      if (list.length === 0) {
-        setError('未找到可用模型')
-      }
-    } catch (e) {
-      setError('无法连接 LMStudio 服务')
-      setModels([])
-    } finally {
-      setLoadingModels(false)
-    }
-  }, [editing])
-
-  const apply = async () => {
-    if (!editing) return
+  const handleApply = async () => {
+    if (!config) return
     setApplying(true)
-    setError(null)
     try {
-      await setLLMConfig(editing)
-      setConfig(editing)
-      onStatusChange?.('loading')
-      const status = await checkLLMStatus()
-      onStatusChange?.(status.status)
-      if (!status.success) {
-        setError(`连接失败: ${status.detail}`)
-      }
+      await setLLMConfig(config)
+      await refreshStatus()
     } catch (e) {
-      setError((e as Error).message)
-      onStatusChange?.('error')
+      console.error(e)
     } finally {
       setApplying(false)
     }
   }
 
-  if (!editing) return null
-
-  const providerType: LLMProviderType = editing.provider
+  if (!config) return null
 
   return (
-    <div className="space-y-3">
-      {/* Base URL */}
-      <div>
-        <label className="text-[11px] text-gray-400 block mb-1">服务地址</label>
-        <input
-          type="text"
-          value={editing.base_url}
-          onChange={e => setEditing({ ...editing, base_url: e.target.value })}
-          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 bg-gray-50"
-          placeholder="http://127.0.0.1:1234"
-        />
+    <div className="space-y-4">
+      {/* Module 1: Compute Engine (GPU) */}
+      <div className="module-card">
+        <div className="module-header">
+          <div className="flex items-center gap-2">
+            <Cpu size={14} className="text-[var(--text-secondary)]" />
+            <span className="module-title">计算引擎 (GPU)</span>
+          </div>
+          <div className="flex items-center gap-2">
+             <span className="text-[10px] text-[var(--text-muted)] font-mono-num uppercase">
+               {engineStatus?.gpu ? 'Active' : 'Offline'}
+             </span>
+             <div className={`status-dot ${engineStatus?.gpu ? 'status-dot-active' : 'bg-gray-300'}`} />
+          </div>
+        </div>
+        <div className="p-3 space-y-2">
+          {engineStatus?.gpu ? (
+            <>
+              <div className="text-xs font-bold text-[var(--text-primary)] truncate">
+                {engineStatus.gpu.name}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="bg-[var(--brand-light)] p-2 rounded-[var(--radius-sm)]">
+                  <div className="text-[10px] text-[var(--text-muted)] uppercase mb-1">显存占用</div>
+                  <div className="text-sm font-mono-num font-bold text-[var(--accent)]">
+                    {engineStatus.gpu.memory_allocated}
+                  </div>
+                </div>
+                <div className="bg-[var(--brand-light)] p-2 rounded-[var(--radius-sm)]">
+                  <div className="text-[10px] text-[var(--text-muted)] uppercase mb-1">预留显存</div>
+                  <div className="text-sm font-mono-num font-bold text-[var(--text-secondary)]">
+                    {engineStatus.gpu.memory_reserved}
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="py-2 text-center text-xs text-[var(--text-muted)] border border-dashed border-[var(--border)] rounded-[var(--radius-sm)]">
+              未检测到可用 GPU 加速
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Advanced params */}
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <label className="text-[11px] text-gray-400 block mb-1">Temperature</label>
-          <input
-            type="number"
-            min={0}
-            max={2}
-            step={0.1}
-            value={editing.temperature}
-            onChange={e => setEditing({ ...editing, temperature: parseFloat(e.target.value) || 0 })}
-            className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 bg-gray-50"
-          />
-        </div>
-        <div>
-          <label className="text-[11px] text-gray-400 block mb-1">Max Tokens</label>
-          <input
-            type="number"
-            min={1}
-            max={32768}
-            step={1}
-            value={editing.max_tokens}
-            onChange={e => setEditing({ ...editing, max_tokens: parseInt(e.target.value) || 1 })}
-            className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 bg-gray-50"
-          />
-        </div>
-      </div>
-
-      {/* Model selector */}
-      <div>
-        <div className="flex items-center justify-between mb-1">
-          <label className="text-[11px] text-gray-400">模型</label>
-          <button
-            onClick={refreshModels}
-            disabled={loadingModels}
-            className="text-[11px] text-brand-500 hover:text-brand-700 flex items-center gap-1 disabled:opacity-50 transition"
+      {/* Module 2: Model Status */}
+      <div className="module-card">
+        <div className="module-header">
+          <div className="flex items-center gap-2">
+            <Database size={14} className="text-[var(--text-secondary)]" />
+            <span className="module-title">模型状态</span>
+          </div>
+          <button 
+            onClick={refreshStatus} 
+            disabled={loading}
+            className="p-1 hover:bg-white/50 rounded-full transition disabled:opacity-50"
           >
-            <RefreshCw size={11} className={loadingModels ? 'animate-spin' : ''} />
-            刷新列表
+            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
-
-        {models.length > 0 ? (
-          <div className="relative">
-            <button
-              onClick={() => setShowModelDropdown(v => !v)}
-              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-left flex items-center justify-between bg-gray-50 hover:border-gray-300 transition"
-            >
-              <span className="truncate">{editing.model_name}</span>
-              <ChevronDown size={13} className="text-gray-400 shrink-0" />
-            </button>
-            {showModelDropdown && (
-              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-xl max-h-48 overflow-y-auto">
-                {models.map(m => (
-                  <button
-                    key={m.name}
-                    onClick={() => {
-                      setEditing({ ...editing, model_name: m.name })
-                      setShowModelDropdown(false)
-                    }}
-                    className={`w-full text-sm text-left px-3 py-1.5 hover:bg-brand-50 transition ${
-                      editing.model_name === m.name ? 'bg-brand-50 text-brand-600 font-medium' : 'text-gray-600'
-                    }`}
-                  >
-                    <span className="truncate block">{m.name}</span>
-                  </button>
-                ))}
-              </div>
-            )}
+        <div className="p-3">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <div className="text-[10px] text-[var(--text-muted)] uppercase">当前模型</div>
+              <div className="text-xs font-bold text-[var(--text-primary)]">{engineStatus?.model || config.model_name}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-[10px] text-[var(--text-muted)] uppercase">核心架构</div>
+              <div className="text-xs font-mono-num uppercase text-[var(--text-secondary)]">{engineStatus?.provider || config.provider}</div>
+            </div>
           </div>
-        ) : (
-          <input
-            type="text"
-            value={editing.model_name}
-            onChange={e => setEditing({ ...editing, model_name: e.target.value })}
-            className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 bg-gray-50"
-            placeholder="输入模型名称或点击刷新列表"
-          />
-        )}
+          
+          <div className="space-y-1">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-[var(--text-secondary)]">推理压力</span>
+              <span className="font-mono-num text-[var(--accent)]">Normal</span>
+            </div>
+            <div className="h-1 bg-[var(--brand-light)] rounded-full overflow-hidden">
+              <div className="h-full bg-[var(--accent)] w-[15%]" />
+            </div>
+          </div>
+        </div>
       </div>
 
-      {error && (
-        <p className="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-1.5">{error}</p>
-      )}
+      {/* Module 3: Inference Settings */}
+      <div className="module-card">
+        <div className="module-header">
+          <div className="flex items-center gap-2">
+            <Settings2 size={14} className="text-[var(--text-secondary)]" />
+            <span className="module-title">推理参数</span>
+          </div>
+        </div>
+        <div className="p-3 space-y-3">
+          <div>
+            <div className="flex justify-between mb-1">
+              <label className="text-[11px] text-[var(--text-secondary)] font-bold">Temperature</label>
+              <span className="text-[11px] font-mono-num text-[var(--brand)]">{config.temperature}</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={1.5}
+              step={0.1}
+              value={config.temperature}
+              onChange={e => setConfig({ ...config, temperature: parseFloat(e.target.value) })}
+              className="w-full h-1 bg-[var(--brand-light)] rounded-full appearance-none cursor-pointer accent-[var(--brand)]"
+            />
+          </div>
 
-      <button
-        onClick={apply}
-        disabled={applying}
-        className="w-full text-sm font-medium text-white rounded-lg px-3 py-2 transition hover:opacity-90 disabled:opacity-50"
-        style={{ background: 'var(--brand)' }}
-      >
-        {applying ? '应用中...' : '应用配置'}
-      </button>
+          <div>
+            <div className="flex justify-between mb-1">
+              <label className="text-[11px] text-[var(--text-secondary)] font-bold">Max Tokens</label>
+              <span className="text-[11px] font-mono-num text-[var(--brand)]">{config.max_tokens}</span>
+            </div>
+            <input
+              type="range"
+              min={128}
+              max={4096}
+              step={128}
+              value={config.max_tokens}
+              onChange={e => setConfig({ ...config, max_tokens: parseInt(e.target.value) })}
+              className="w-full h-1 bg-[var(--brand-light)] rounded-full appearance-none cursor-pointer accent-[var(--brand)]"
+            />
+          </div>
 
-      {config && (
-        <p className="text-[11px] text-gray-400 text-center">
-          当前: {config.model_name}
-        </p>
+          <button
+            onClick={handleApply}
+            disabled={applying}
+            className="w-full py-1.5 bg-[var(--brand)] text-white text-[11px] font-bold uppercase tracking-widest rounded-[var(--radius-sm)] hover:opacity-90 transition disabled:opacity-50"
+          >
+            {applying ? 'Updating Engine...' : 'Sync Configuration'}
+          </button>
+        </div>
+      </div>
+
+      {engineStatus?.detail && (
+        <div className="p-2 bg-red-50 border border-red-100 rounded-[var(--radius-sm)]">
+          <div className="text-[9px] text-red-400 uppercase font-bold mb-1">Diagnostic Error</div>
+          <div className="text-[10px] text-red-600 font-mono-num break-all">{engineStatus.detail}</div>
+        </div>
       )}
     </div>
   )

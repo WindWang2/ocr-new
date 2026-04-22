@@ -25,3 +25,19 @@ services:
     depends_on:
       - backend
     restart: always
+
+  llama:
+    image: ghcr.io/ggerganov/llama.cpp:server-cuda
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../2B-new:/models
+    command: -m /models/Qwen3.5-2B.Q4_K_M.gguf --mmproj /models/mmproj-BF16.gguf --host 0.0.0.0 --port 8080 -ngl -1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: always

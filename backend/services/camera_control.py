@@ -39,6 +39,12 @@ class CameraClient:
         """默认配置"""
         return Config.get_camera_config()
     
+    def capture_image(self) -> Tuple[bool, dict]:
+        """
+        触发拍照并返回图片路径（不包含读数逻辑，结构与 trigger_and_read 兼容）
+        """
+        return self.trigger_and_read()
+
     def _snapshot_existing_files(self) -> set:
         """记录当前图片目录中已存在的所有文件名（用于检测新文件）"""
         today_dir = self.image_dir / datetime.now().strftime("%Y%m%d")

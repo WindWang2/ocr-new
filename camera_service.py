@@ -29,6 +29,7 @@ import numpy as np
 
 from config import Config
 from instrument_reader import InstrumentReader
+from backend.models.database import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +239,12 @@ class CameraService:
         Args:
             test_mode: 测试模式，不连接真实相机
         """
+        # 同步数据库配置到全局 Config
+        db_image_dir = get_config("image_dir")
+        if db_image_dir:
+            Config.update_image_dir(db_image_dir)
+            logger.info(f"已同步数据库图片目录到 Config: {db_image_dir}")
+
         self.config = Config.get_camera_config()
         self.test_mode = test_mode
 
@@ -349,9 +356,9 @@ class CameraService:
             result["image_path"] = str(image_path)
             logger.info(f"[相机{camera_id}] 读取图片: {image_path.name}")
 
-            # 缩放图像
-            if Config.IMAGE_RESIZE_ENABLED:
-                resize_image(str(image_path), Config.IMAGE_MAX_SIZE)
+            # 缩放图像 (注意：此处已禁用，改为在裁剪特写时缩放，以保留原图清晰度)
+            # if Config.IMAGE_RESIZE_ENABLED:
+            #     resize_image(str(image_path), Config.IMAGE_MAX_SIZE)
 
             # 读取仪器
             reading_result = self.reader.read_instrument(str(image_path))

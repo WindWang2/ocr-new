@@ -1,4 +1,4 @@
-"""YOLO-based instrument detector."""
+import os
 import logging
 from typing import List
 from PIL import Image
@@ -19,24 +19,42 @@ class YOLOInstrumentDetector:
     All output bboxes format: [x1, y1, x2, y2, confidence, class_id]
     """
 
-    def __init__(self, model_path: str = None, confidence_threshold: float = 0.5, iou_threshold: float = 0.15, agnostic_nms: bool = True):
+    def __init__(self, model_path: str = None, confidence_threshold: float = 0.1, iou_threshold: float = 0.45, agnostic_nms: bool = True):
         if YOLO is None:
             raise ImportError("ultralytics is required for YOLO detection")
         self.confidence_threshold = confidence_threshold
         self.iou_threshold = iou_threshold
         self.agnostic_nms = agnostic_nms
-        self.model_path = model_path or "models/yolo_instrument.pt"
+        
+        # 强制定位到项目根目录下的 models 文件夹
+        from pathlib import Path
+        project_root = Path(__file__).parent.parent.parent
+        self.model_path = model_path or r"C:\Users\wangj.KEVIN\projects\last.pt"
+        
+        if not os.path.exists(self.model_path):
+            logger.warning(f"指定模型未找到: {self.model_path}, 尝试备选路径...")
+            fallback = project_root / "yolov8n.pt"
+            if fallback.exists():
+                self.model_path = str(fallback)
+            else:
+                self.model_path = "yolov8n.pt" # 自动下载
+
+        logger.info(f"YOLO 加载模型: {self.model_path} (阈值: {self.confidence_threshold})")
         self._load_model()
 
     def _load_model(self):
         """Load the YOLO model"""
         import os
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
         if os.path.exists(self.model_path):
             self.model = YOLO(self.model_path)
         else:
             # Fallback to pretrained yolov8n
             self.model = YOLO("yolov8n.pt")
             logger.warning(f"Fine-tuned model not found at {self.model_path}, using pretrained yolov8n")
+        
+        self.model.to(device)
+        logger.info(f"YOLO 运行设备: {device}")
 
     def detect(self, image: Image.Image) -> List[List[float]]:
         """Detect instruments in the given image.

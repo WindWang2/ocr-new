@@ -10,12 +10,12 @@ OCR 实验 API 服务
 启动: uvicorn main:app --reload --port 8001
 """
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 import logging
 import json
@@ -46,6 +46,8 @@ from backend.services.camera_control import (
 )
 from backend.services.mock_camera import MockCameraClient
 from backend.services.task_manager import task_manager, TaskState
+from backend.services.llama_launcher import llama_launcher
+from backend.services.multi_instrument_pipeline import MultiInstrumentPipeline
 from config import Config
 
 # 日志配置
@@ -65,21 +67,50 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS 中间件
-allowed_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8001,http://127.0.0.1:8001").split(",")
+# 全局 OCR 流水线 (懒加载)
+_pipeline = None
 
+def get_pipeline():
+    global _pipeline
+    if _pipeline is None:
+        logger.info("正在初始化 MultiInstrumentPipeline...")
+        _pipeline = MultiInstrumentPipeline()
+    return _pipeline
+
+# CORS 中间件
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    import traceback
+    error_msg = traceback.format_exc()
+    logger.error(f"Unhandled exception at {request.url}: {error_msg}")
+    return JSONResponse(
+        status_code=500,
+        content={"success": False, "detail": "Internal Server Error", "traceback": error_msg},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
 # 静态文件：挂载图片目录，供前端访问拍照图片
-_images_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "camera_images")))
+# 优先从数据库读取，如果没有则使用 Config 默认值
+image_dir_path = get_config("image_dir") or Config.CAMERA_IMAGE_DIR
+_images_dir = Path(image_dir_path)
+if not _images_dir.is_absolute():
+    _images_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", _images_dir)))
+
 _images_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/images", StaticFiles(directory=str(_images_dir)), name="images")
+logger.info(f"图片文件夹挂载完成: {_images_dir}")
 
 async def image_cleanup_task():
     """定期清理过期的图片文件，防止磁盘占满"""
@@ -99,6 +130,18 @@ async def image_cleanup_task():
 
 @app.on_event("startup")
 async def startup_event():
+    # 同步数据库配置到全局 Config
+    db_image_dir = get_config("image_dir")
+    if db_image_dir:
+        Config.update_image_dir(db_image_dir)
+        logger.info(f"已同步数据库图片目录到 Config: {db_image_dir}")
+
+    # 自动启动本地 Llama Server (可选)
+    auto_start = os.getenv("AUTO_START_LLAMA", "true").lower() == "true"
+    if auto_start:
+        # 在后台线程启动以免阻塞 FastAPI 启动
+        asyncio.create_task(asyncio.to_thread(llama_launcher.start))
+    
     asyncio.create_task(image_cleanup_task())
     asyncio.create_task(_task_cleanup_loop())
 
@@ -111,6 +154,25 @@ async def _task_cleanup_loop():
         except Exception as e:
             logger.error(f"任务清理出错: {e}")
         await asyncio.sleep(300)  # 每5分钟清理一次
+
+
+# ==================== Llama 管理 API ====================
+
+@app.get("/llama/status")
+def get_llama_status():
+    """获取本地 Llama Server 运行状态"""
+    return {
+        "is_running": llama_launcher.is_running(),
+        "host": llama_launcher.host,
+        "port": llama_launcher.port
+    }
+
+@app.post("/llama/restart")
+def restart_llama():
+    """手动重启本地 Llama Server"""
+    llama_launcher.stop()
+    success = llama_launcher.start()
+    return {"success": success, "message": "Llama Server 已重新启动" if success else "启动失败"}
 
 
 # ==================== 异步任务查询 API ====================
@@ -227,6 +289,10 @@ class ExperimentCaptureBody(BaseModel):
     camera_id: int
 
 
+class InstrumentMappingUpdate(BaseModel):
+    mapping: Dict[str, int]
+
+
 # ==================== 相机管理 API ====================
 
 @app.get("/cameras")
@@ -260,6 +326,125 @@ def create_camera(camera: CameraCreate):
     except Exception as e:
         logger.error(f"添加相机失败: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/cameras/match_instruments")
+async def match_instruments():
+    """
+    一键匹配仪器到相机：
+    1. 依次触发所有可用相机拍照
+    2. 利用 YOLO 识别各相机中的仪器
+    3. 更新系统配置中的 instrument_camera_mapping
+    """
+    logger.info("开始一键仪器匹配...")
+    enabled_cameras = get_cameras(enabled_only=True)
+    if not enabled_cameras:
+        return {"success": False, "detail": "没有已启用的相机"}
+
+    pipeline = get_pipeline()
+    
+    # instrument_id -> {camera_id, confidence}
+    best_matches = {}
+    scan_results = []
+
+    for cam in enabled_cameras:
+        cam_id = cam["camera_id"]
+        logger.info(f"正在扫描相机 {cam_id}...")
+        
+        # 拍照
+        mock_enabled = get_config("mock_camera_enabled", default=False)
+        logger.info(f"相机 {cam_id}: Mock模式={mock_enabled}")
+        try:
+            image_dir = get_config("image_dir", default=None) or None
+            if mock_enabled:
+                logger.info(f"相机 {cam_id}: 正在从目录 {image_dir} 获取 Mock 图片")
+                client = MockCameraClient(camera_id=cam_id, image_dir=image_dir)
+            else:
+                camera_config = Config.get_camera_config()
+                if image_dir:
+                    camera_config["image_dir"] = image_dir
+                client = CameraClient(camera_id=cam_id, config=camera_config)
+            
+            success, capture_result = client.capture_image()
+            if not success:
+                scan_results.append({"camera_id": cam_id, "status": "capture_failed", "error": capture_result.get("error")})
+                continue
+            
+            image_path = capture_result.get("image_path")
+            if not image_path:
+                logger.warning(f"相机 {cam_id}: 未获取到图片路径")
+                scan_results.append({"camera_id": cam_id, "status": "no_image"})
+                continue
+            
+            logger.info(f"相机 {cam_id}: 成功获取图片 {image_path}")
+
+            # 转换为 PIL 图片进行处理
+            from PIL import Image
+            img = Image.open(image_path).convert("RGB")
+            
+            # YOLO 检测
+            detections = pipeline.yolo_detector.detect(img)
+            found_instruments = []
+            
+            logger.info(f"相机 {cam_id}: 原始检测到 {len(detections)} 个目标")
+            for det in detections:
+                conf = float(det[4])
+                class_id = int(det[5])
+                logger.info(f"  - 目标 ID: {class_id}, 置信度: {conf:.4f}")
+                
+                # 严格限制标签范围 0-8
+                if not (0 <= class_id <= 8):
+                    logger.warning(f"    [跳过] ID {class_id} 不在 0-8 范围内")
+                    continue
+                    
+                found_instruments.append({"class_id": class_id, "confidence": conf})
+                
+                # 如果这是该仪器目前遇到的最高置信度，则记录下来
+                if class_id not in best_matches or conf > best_matches[class_id]["confidence"]:
+                    best_matches[class_id] = {
+                        "camera_id": cam_id,
+                        "confidence": conf
+                    }
+            
+            scan_results.append({
+                "camera_id": cam_id,
+                "status": "success",
+                "instruments": found_instruments
+            })
+            
+        except Exception as e:
+            logger.error(f"扫描相机 {cam_id} 出错: {e}")
+            scan_results.append({"camera_id": cam_id, "status": "error", "detail": str(e)})
+
+    # 更新全局映射
+    if best_matches:
+        new_mapping = {str(k): v["camera_id"] for k, v in best_matches.items()}
+        set_config("instrument_camera_mapping", new_mapping)
+        logger.info(f"一键匹配完成，新映射: {new_mapping}")
+        
+        # 返回结果中包含名称
+        from instrument_reader import DynamicInstrumentLibrary
+        final_summary = []
+        for inst_id, data in best_matches.items():
+            name = DynamicInstrumentLibrary.get_instrument_type_from_camera(f"F{inst_id}")
+            final_summary.append({
+                "instrument_id": inst_id,
+                "instrument_name": name,
+                "camera_id": data["camera_id"],
+                "confidence": data["confidence"]
+            })
+        
+        return {
+            "success": True,
+            "mapping": new_mapping,
+            "summary": final_summary,
+            "scan_details": scan_results
+        }
+    else:
+        return {
+            "success": False,
+            "detail": "扫描完成，但未识别到任何已知仪表",
+            "scan_details": scan_results
+        }
 
 
 @app.delete("/cameras/{camera_id}")
@@ -427,7 +612,7 @@ def capture_image_endpoint(exp_id: int, body: ExperimentCaptureBody):
 
 class ExperimentRunTestBody(BaseModel):
     field_key: str
-    camera_id: int                      # 物理相机 ID (用于触发拍照)
+    camera_id: Optional[int] = None      # 物理相机 ID (可选，不传则根据仪器自动解析)
     target_instrument_id: Optional[int] = None # 目标仪器类别 ID (0-8, 用于 YOLO 过滤)
     image_path: Optional[str] = None
     reading_key: Optional[str] = None   # 仪器读数键，如 "actual_reading"、"tension"
@@ -436,31 +621,56 @@ class ExperimentRunTestBody(BaseModel):
     camera_mode: Optional[str] = None  # F0 专用："auto"（自动模式）或 "manual"（手动模式）
 
 
-@app.post("/experiments/{exp_id}/run-test")
-def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
+def _core_run_test_capture(
+    exp_id: int,
+    field_key: str,
+    camera_id: Optional[int] = None,
+    target_instrument_id: Optional[int] = None,
+    image_path: Optional[str] = None,
+    reading_key: Optional[str] = None,
+    run_index: Optional[int] = None,
+    precise: bool = False,
+    camera_mode: Optional[str] = None,
+) -> dict:
     """
-    测试模板 OCR 识别。
-    如果提供 image_path 则跳过拍照，直接对指定图片做 OCR。
+    核心 OCR 测试逻辑（同步/异步版共享）。
+
+    完成以下步骤:
+    1. 解析目标仪器 ID 并路由到物理相机
+    2. 拍照（若未提供 image_path）
+    3. YOLO + LLM OCR 识别
+    4. 目标匹配 + 白名单过滤
+    5. 主值提取与保存
+
+    返回 dict（不抛出 HTTPException），由上层端点决定异常策略。
     """
+    from backend.models.constants import INSTRUMENT_FIELD_WHITELIST as WHITELIST
+    import os
+
     experiment = get_experiment(exp_id)
     if not experiment:
-        raise HTTPException(status_code=404, detail="实验不存在")
+        return {"success": False, "detail": "实验不存在"}
 
-    # 1. 确定目标仪器 ID 和对应的物理相机 (解耦核心)
-    target_instrument_id = body.target_instrument_id
+    # 1. 确定目标仪器 ID
     if target_instrument_id is None:
-        match = re.search(r'F(\d+)', body.field_key)
-        if match: target_instrument_id = int(match.group(1))
-        else: target_instrument_id = body.camera_id
+        match = re.search(r'F(\d+)', field_key)
+        if match:
+            target_instrument_id = int(match.group(1))
+        else:
+            # 如果 field_key 也不包含 Fx，则尝试回退到 camera_id
+            target_instrument_id = camera_id if camera_id is not None else 0
 
     # 自动根据仪器 ID 路由到物理相机
     from instrument_reader import DynamicInstrumentLibrary
     physical_camera_id = DynamicInstrumentLibrary.get_physical_camera_id(target_instrument_id)
+    
+    # 如果明确传了 camera_id，则以传入的为准（用于强制指定相机测试）
+    if camera_id is not None:
+        physical_camera_id = camera_id
 
-    saved_image_path = body.image_path
+    saved_image_path = image_path
 
     if not saved_image_path:
-        # 未提供 image_path，执行完整拍照+OCR
         mock_enabled = get_config("mock_camera_enabled", default=False)
         try:
             image_dir = get_config("image_dir", default=None) or None
@@ -471,7 +681,8 @@ def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
             else:
                 from backend.services.camera_control import CameraClient
                 camera_config = Config.get_camera_config()
-                if image_dir: camera_config["image_dir"] = image_dir
+                if image_dir:
+                    camera_config["image_dir"] = image_dir
                 client = CameraClient(camera_id=physical_camera_id, config=camera_config)
                 success, result = client.capture_image()
         except Exception as e:
@@ -488,121 +699,303 @@ def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
     if not saved_image_path:
         return {"success": False, "detail": "无可用图片"}
 
-    # 对保存的图片做 OCR
-    import os
+    # OCR
     full_image_path = os.path.abspath(str(_images_dir / saved_image_path))
-    logger.info(f"==> DBUG: full_image_path in main.py is: {full_image_path}")
+    logger.info(f"==> DBUG: full_image_path in _core_run_test_capture: {full_image_path}")
+    print(f"\n[MAIN_DEBUG] target_instrument_id={target_instrument_id}, physical_camera_id={physical_camera_id}, saved_image_path={saved_image_path}\n")
     try:
-        from instrument_reader import InstrumentReader, DynamicInstrumentLibrary
+        from instrument_reader import InstrumentReader
         from backend.services.llm_provider import get_global_provider
         reader = InstrumentReader(provider=get_global_provider())
+        print(f"\n[MAIN_DEBUG_PRE_OCR] Calling reader.read_instrument for {full_image_path}, target={target_instrument_id}\n")
         
-        # 使用全新 YOLO 多目标识别逻辑
-        ocr_result = reader.read_instrument(full_image_path)
-        
+        # 优化：如果是裁剪后的图片且已知仪器 ID，直接走专用 Prompt 通道，跳过冗余 YOLO
+        if target_instrument_id is not None and "crop" in str(saved_image_path):
+            logger.info(f"检测到裁剪图，直接执行 F{target_instrument_id} 专用识别...")
+            # 使用更智能的 read_instrument，支持目标过滤和后处理
+            ocr_result = reader.read_instrument(full_image_path, target_class_id=target_instrument_id)
+        else:
+            ocr_result = reader.read_instrument(full_image_path, target_class_id=target_instrument_id)
     except Exception as e:
         logger.error(f"OCR 失败: {e}")
         return {"success": False, "detail": f"OCR 识别失败: {e}"}
 
     if not ocr_result.get("success"):
-        return {"success": False, "detail": ocr_result.get("error", "OCR 识别失败")}
+        return {
+            "success": False, 
+            "detail": ocr_result.get("error", "OCR 识别失败"),
+            "image_path": ocr_result.get("cropped_image_path", saved_image_path)
+        }
 
-    # 2. 精准匹配与保存逻辑 (严格锁定目标仪器)
-    target_instrument_id = body.target_instrument_id
-    if target_instrument_id is None:
-        match = re.search(r'F(\d+)', body.field_key)
-        if match:
-            target_instrument_id = int(match.group(1))
-
+    # 2. 精准匹配目标仪器
     best_target = None
     all_results = ocr_result.get("all_results", []) if ocr_result.get("multiple_targets") else [ocr_result]
-    
-    # 优先匹配类别 ID 一致的
-    for t in all_results:
-        if target_instrument_id is not None:
-            if t.get("class_id") == target_instrument_id:
-                best_target = t
-                break
-        elif len(all_results) == 1:
-            best_target = all_results[0]
-            break
+
+    if all_results:
+        # 2a. 查精确匹配
+        best_target = next((t for t in all_results if t.get("class_id") == target_instrument_id), None)
+        
+        # 2b. 共享相机模糊匹配
+        if not best_target and target_instrument_id is not None:
+            from instrument_reader import DynamicInstrumentLibrary
+            all_ids_on_this_camera = sorted([id for id in range(9) if DynamicInstrumentLibrary.get_physical_camera_id(id) == physical_camera_id])
+            if target_instrument_id in all_ids_on_this_camera:
+                target_idx = all_ids_on_this_camera.index(target_instrument_id)
+                sorted_res = sorted(all_results, key=lambda x: (x.get("bbox") or [0])[0])
+                if target_idx < len(sorted_res):
+                    best_target = sorted_res[target_idx]
+                    logger.info(f"F{target_instrument_id} 精确匹配失败，采用位置排序匹配(OCR阶段): Index {target_idx}")
 
     if not best_target:
-        return {"success": True, "detail": f"图中未检测到目标仪表 (ID:{target_instrument_id})", "all_ocr": {}, "readings": []}
+        return {"success": True, "detail": f"图中未检测到目标仪表 (ID:{target_instrument_id})", "all_ocr": {}, "readings": [], "image_path": saved_image_path}
 
-    # 3. 解析该目标的读数（物理隔离：只取该目标的内容）
+    # 3. 解析读数
     raw_response = best_target.get("readings", {})
     readings_dict = raw_response if isinstance(raw_response, dict) else {}
     if isinstance(raw_response, str):
-        try: readings_dict = json.loads(raw_response)
-        except: readings_dict = {}
+        try:
+            readings_dict = json.loads(raw_response)
+        except Exception:
+            readings_dict = {}
 
-    # 4. 强制白名单过滤 (杜绝天平出pH等灵异现象)
-    # 根据目标仪器的 ID 强制应用过滤规则
-    WHITELIST = {
-        0: ['mode', 'current_speed', 'total_time', 'remaining_time', 'seg1_speed', 'seg2_speed', 'seg3_speed'],
-        1: ['weight'],
-        2: ['weight'],
-        3: ['ph_value', 'temperature', 'pts'],
-        4: ['content_mg_l', 'transmittance', 'absorbance', 'test_value', 'blank_value'],
-        5: ['tension', 'temperature', 'upper_density', 'lower_density', 'rise_speed', 'fall_speed'],
-        6: ['rotation_speed', 'torque', 'time'],
-        7: ['temperature', 'time'],
-        8: ['actual_reading', 'max_reading', 'min_reading', 'rotation_speed', 'apparent_viscosity']
-    }
-    
+    # 4. 白名单过滤
     current_whitelist = WHITELIST.get(target_instrument_id, [])
     filtered_readings = {}
     numeric_ocr = {}
 
     for k, v in readings_dict.items():
-        if v is None: continue
-        # 核心：不在白名单内的字段直接丢弃，不返回给前端
+        if v is None:
+            continue
         if target_instrument_id is not None and k not in current_whitelist:
             continue
-            
+
         filtered_readings[k] = v
         str_val = str(v).strip()
-        
-        # 数值提取
+
+        # 时间格式 "MM:SS" → 秒数
         if k == "time" and ":" in str_val:
             try:
                 parts = str_val.split(":")
                 numeric_ocr[k] = float(parts[0]) * 60 + float(parts[1])
                 continue
-            except: pass
-        
+            except Exception:
+                pass
+
         clean_val = re.sub(r'[^\d\.\-]', '', str_val)
         try:
-            if clean_val and clean_val != ".": numeric_ocr[k] = float(clean_val)
-        except: pass
+            if clean_val and clean_val != ".":
+                numeric_ocr[k] = float(clean_val)
+        except Exception:
+            pass
 
     # 5. 确定主值并保存
-    primary_key = body.reading_key
+    primary_key = reading_key
     if not primary_key:
-        config = next((c for c in experiment["camera_configs"] if c["field_key"] == body.field_key), None)
+        config = next((c for c in experiment["camera_configs"] if c["field_key"] == field_key), None)
         selected = config.get("selected_readings", []) if config else []
         primary_key = next((k for k in selected if k in numeric_ocr), None)
-    
+        
+        # 智能兜底：如果还是没确定主键，尝试从白名单和识别结果中自动选择
+        if not primary_key:
+            if target_instrument_id == 1 or target_instrument_id == 2:
+                primary_key = 'weight'
+            elif len(current_whitelist) == 1:
+                primary_key = current_whitelist[0]
+            elif 'actual_reading' in numeric_ocr:
+                primary_key = 'actual_reading'
+            elif 'weight' in numeric_ocr:
+                primary_key = 'weight'
+            elif numeric_ocr:
+                # 最后的最后，选第一个识别到的数字
+                primary_key = list(numeric_ocr.keys())[0]
+
     primary_value = numeric_ocr.get(primary_key, 0.0) if primary_key else 0.0
     target_image_path = best_target.get("cropped_image_path", saved_image_path)
-    run_index = body.run_index if body.run_index is not None else len([r for r in experiment["readings"] if r["field_key"] == body.field_key])
+    final_run_index = run_index if run_index is not None else len(
+        [r for r in experiment["readings"] if r["field_key"] == field_key]
+    )
 
     reading = upsert_reading(
         experiment_id=exp_id,
-        field_key=body.field_key,
-        camera_id=body.camera_id,
+        field_key=field_key,
+        camera_id=physical_camera_id,
         value=primary_value,
-        run_index=run_index,
+        run_index=final_run_index,
         image_path=target_image_path,
+        ocr_data=filtered_readings # 保持完整 OCR 数据
     )
 
     return {
         "success": True,
         "readings": [reading],
-        "all_ocr": filtered_readings, # 返回极其纯净的结果
-        "detail": None if (primary_key and primary_key in numeric_ocr) else "已精准捕获仪器特写，但读数需校对"
+        "all_ocr": filtered_readings,
+        "detail": None if (primary_key and primary_key in numeric_ocr) else "已精准捕获仪器特写，但读数需校对",
     }
+
+@app.post("/experiments/{exp_id}/detect")
+def detect_instrument_endpoint(exp_id: int, body: ExperimentRunTestBody):
+    """
+    仅运行 YOLO 检测并回传裁剪后的图片路径 (不进行 LLM 识别)。
+    如果未提供 image_path，会自动解析物理相机路径。
+    """
+    import os
+    from instrument_reader import InstrumentReader, DynamicInstrumentLibrary
+
+    # 1. 确定物理路径
+    image_path = body.image_path
+    if not image_path:
+        return {"success": False, "detail": "必须提供 image_path"}
+
+    full_image_path = os.path.abspath(str(_images_dir / image_path))
+    
+    try:
+        reader = InstrumentReader()
+        result = reader.detect_only(full_image_path)
+        
+        if result["success"]:
+            # 找到匹配 target_instrument_id 的结果
+            target_id = body.target_instrument_id
+            if target_id is None:
+                match = re.search(r'F(\d+)', body.field_key)
+                if match: target_id = int(match.group(1))
+
+            best_crop = None
+            if target_id is not None:
+                best_crop = next((r for r in result["results"] if r["class_id"] == target_id), None)
+
+            if best_crop:
+                return {
+                    "success": True,
+                    "image_path": best_crop["cropped_image_path"],
+                    "class_id": best_crop["class_id"],
+                    "bbox": best_crop["bbox"]
+                }
+        
+        return {"success": False, "detail": result.get("error", "未检出结果"), "image_path": image_path}
+    except Exception as e:
+        logger.error(f"检测失败: {e}")
+        return {"success": False, "detail": str(e), "image_path": image_path}
+
+
+@app.post("/experiments/{exp_id}/auto-trigger")
+def auto_trigger_instrument(exp_id: int, body: ExperimentRunTestBody):
+    """
+    自动触发: 
+    1. 根据 instrument_id (0-8) 自动寻找物理相机
+    2. 拍照
+    3. YOLO 检测目标
+    4. 裁剪并存图
+    5. 返回 crop 路径，供前端立即显示
+    """
+    import os
+    from instrument_reader import InstrumentReader, DynamicInstrumentLibrary
+    
+    # 1. 确定目标仪器 ID (F0-F8)
+    target_id = body.target_instrument_id
+    if target_id is None:
+        match = re.search(r'F(\d+)', body.field_key)
+        if match: 
+            target_id = int(match.group(1))
+    
+    if target_id is None:
+        # 如果还是没找到，尝试从 camera_id 映射 (旧逻辑兼容)
+        target_id = body.camera_id
+
+    # 2. 自动定位物理相机
+    physical_camera_id = DynamicInstrumentLibrary.get_physical_camera_id(target_id)
+    logger.info(f"仪器 F{target_id} 映射到物理相机 {physical_camera_id}")
+
+    # 3. 拍照
+    mock_enabled = get_config("mock_camera_enabled", default=False)
+    image_dir_cfg = get_config("image_dir", default=None) or None
+    try:
+        if mock_enabled:
+            client = MockCameraClient(camera_id=physical_camera_id, image_dir=image_dir_cfg)
+            success, result = client.capture_image()
+        else:
+            camera_config = Config.get_camera_config()
+            if image_dir_cfg:
+                camera_config["image_dir"] = image_dir_cfg
+            client = CameraClient(camera_id=physical_camera_id, config=camera_config)
+            success, result = client.capture_image()
+    except Exception as e:
+        logger.error(f"拍照失败: {e}")
+        return {"success": False, "detail": f"相机连接失败: {e}"}
+
+    if not success:
+        return {"success": False, "detail": result.get("error", "拍照失败")}
+
+    raw_image_path = result.get("image_path")
+    if not raw_image_path:
+        return {"success": False, "detail": "未获取到图片"}
+
+    # 4. 转换并保存全图
+    saved_full_path = _convert_and_save_image(raw_image_path, physical_camera_id, 0)
+    full_image_abs = os.path.abspath(str(_images_dir / saved_full_path))
+
+    # 5. YOLO 检测并获取特写
+    try:
+        reader = InstrumentReader()
+        detect_result = reader.detect_only(full_image_abs)
+        
+        if detect_result["success"] and detect_result["results"]:
+            results = detect_result["results"]
+            logger.info(f"Target F{target_id} detection results: {[r['class_id'] for r in results]}")
+            
+            # 严格匹配 class_id == target_id
+            best_crop = next((r for r in results if r["class_id"] == target_id), None)
+            
+            if best_crop:
+                return {
+                    "success": True,
+                    "image_path": saved_full_path, 
+                    "cropped_image_path": best_crop["cropped_image_path"], 
+                    "class_id": best_crop["class_id"],
+                    "bbox": best_crop["bbox"],
+                    "camera_id": physical_camera_id
+                }
+        
+        # 彻底失败回退全图
+        logger.warning(f"F{target_id} 目标定位失败，返回全景图。全图路径: {saved_full_path}")
+        return {
+            "success": True, 
+            "image_path": saved_full_path, 
+            "cropped_image_path": saved_full_path, 
+            "detail": "未检出目标，回退全图",
+            "camera_id": physical_camera_id
+        }
+    except Exception as e:
+        logger.error(f"检测出错: {e}")
+        return {
+            "success": True, 
+            "image_path": saved_full_path, 
+            "cropped_image_path": saved_full_path, 
+            "detail": str(e),
+            "camera_id": physical_camera_id
+        }
+
+
+@app.post("/experiments/{exp_id}/run-test")
+def run_test_capture(exp_id: int, body: ExperimentRunTestBody):
+    """
+    测试模板 OCR 识别。
+    如果提供 image_path 则跳过拍照，直接对指定图片做 OCR。
+    """
+    experiment = get_experiment(exp_id)
+    if not experiment:
+        raise HTTPException(status_code=404, detail="实验不存在")
+
+    return _core_run_test_capture(
+        exp_id=exp_id,
+        field_key=body.field_key,
+        camera_id=body.camera_id,
+        target_instrument_id=body.target_instrument_id,
+        image_path=body.image_path,
+        reading_key=body.reading_key,
+        run_index=body.run_index,
+        precise=body.precise,
+        camera_mode=body.camera_mode,
+    )
 
 
 # ==================== 异步任务版本 API ====================
@@ -679,154 +1072,18 @@ def run_experiment_field_async(exp_id: int, body: ExperimentRunField):
 
 
 def _do_run_test_capture(exp_id: int, body_dict: dict):
-    """后台线程：执行 run_test_capture 的实际逻辑"""
-    # Reconstruct body-like access from dict
-    field_key = body_dict["field_key"]
-    camera_id = body_dict["camera_id"]
-    image_path = body_dict.get("image_path")
-    reading_key = body_dict.get("reading_key")
-    run_index_body = body_dict.get("run_index")
-    precise = body_dict.get("precise", False)
-    camera_mode = body_dict.get("camera_mode")
-
-    experiment = get_experiment(exp_id)
-    if not experiment:
-        return {"success": False, "detail": "实验不存在"}
-
-    saved_image_path = image_path
-
-    if not saved_image_path:
-        mock_enabled = get_config("mock_camera_enabled", default=False)
-        try:
-            image_dir = get_config("image_dir", default=None) or None
-            if mock_enabled:
-                client = MockCameraClient(camera_id=camera_id, image_dir=image_dir)
-                success, result = client.capture_image()
-            else:
-                camera_config = Config.get_camera_config()
-                if image_dir:
-                    camera_config["image_dir"] = image_dir
-                client = CameraClient(camera_id=camera_id, config=camera_config)
-                success, result = client.trigger_and_read()
-        except Exception as e:
-            logger.error(f"相机 {camera_id} 拍照失败: {e}")
-            return {"success": False, "detail": f"相机连接失败: {e}"}
-
-        if not success:
-            return {"success": False, "detail": result.get("error", "OCR 识别失败")}
-
-        raw_image_path = result.get("image_path")
-        if raw_image_path:
-            saved_image_path = _convert_and_save_image(raw_image_path, camera_id, 0)
-
-    if not saved_image_path:
-        return {"success": False, "detail": "无可用图片"}
-
-    # OCR
-    import os
-    full_image_path = os.path.abspath(str(_images_dir / saved_image_path))
-    try:
-        from instrument_reader import InstrumentReader, DynamicInstrumentLibrary
-        from backend.services.llm_provider import get_global_provider
-        reader = InstrumentReader(provider=get_global_provider())
-        
-        ocr_result = reader.read_instrument(full_image_path)
-    except Exception as e:
-        logger.error(f"OCR 失败: {e}")
-        return {"success": False, "detail": f"OCR 识别失败: {e}"}
-
-    if not ocr_result.get("success"):
-        return {"success": False, "detail": ocr_result.get("error", "OCR 识别失败")}
-
-    # 2. 精准匹配与保存逻辑 (异步版同步对齐)
-    target_id = target_instrument_id
-    if target_id is None:
-        match = re.search(r'F(\d+)', field_key)
-        if match: target_id = int(match.group(1))
-
-    best_target = None
-    all_results = ocr_result.get("all_results", []) if ocr_result.get("multiple_targets") else [ocr_result]
-    
-    for t in all_results:
-        if target_id is not None:
-            if t.get("class_id") == target_id:
-                best_target = t
-                break
-        elif len(all_results) == 1:
-            best_target = all_results[0]
-            break
-
-    if not best_target:
-        return {"success": True, "detail": f"图中未检测到对应仪表 (ID:{target_id})", "all_ocr": {}, "readings": []}
-
-    # 3. 解析该目标的读数
-    raw_response = best_target.get("readings", {})
-    readings_dict = raw_response if isinstance(raw_response, dict) else {}
-    if isinstance(raw_response, str):
-        try: readings_dict = json.loads(raw_response)
-        except: readings_dict = {}
-
-    # 4. 强制白名单过滤 (杜绝跨仪器干扰)
-    WHITELIST = {
-        0: ['mode', 'current_speed', 'total_time', 'remaining_time', 'seg1_speed', 'seg2_speed', 'seg3_speed'],
-        1: ['weight'],
-        2: ['weight'],
-        3: ['ph_value', 'temperature', 'pts'],
-        4: ['content_mg_l', 'transmittance', 'absorbance', 'test_value', 'blank_value'],
-        5: ['tension', 'temperature', 'upper_density', 'lower_density', 'rise_speed', 'fall_speed'],
-        6: ['rotation_speed', 'torque', 'time'],
-        7: ['temperature', 'time'],
-        8: ['actual_reading', 'max_reading', 'min_reading', 'rotation_speed', 'apparent_viscosity']
-    }
-    
-    current_whitelist = WHITELIST.get(target_id, [])
-    filtered_readings = {}
-    numeric_ocr = {}
-
-    for k, v in readings_dict.items():
-        if v is None: continue
-        if target_id is not None and k not in current_whitelist: continue
-            
-        filtered_readings[k] = v
-        str_val = str(v).strip()
-        if k == "time" and ":" in str_val:
-            try:
-                parts = str_val.split(":")
-                numeric_ocr[k] = float(parts[0]) * 60 + float(parts[1])
-                continue
-            except: pass
-        clean_val = re.sub(r'[^\d\.\-]', '', str_val)
-        try:
-            if clean_val and clean_val != ".": numeric_ocr[k] = float(clean_val)
-        except: pass
-
-    # 5. 确定主值并保存
-    primary_key_final = reading_key
-    if not primary_key_final:
-        config = next((c for c in experiment["camera_configs"] if c["field_key"] == field_key), None)
-        selected = config.get("selected_readings", []) if config else []
-        primary_key_final = next((k for k in selected if k in numeric_ocr), None)
-    
-    primary_value = numeric_ocr.get(primary_key_final, 0.0) if primary_key_final else 0.0
-    target_image_path = best_target.get("cropped_image_path", saved_image_path)
-    
-    run_idx = run_index_body if run_index_body is not None else len([r for r in experiment["readings"] if r["field_key"] == field_key])
-
-    reading = upsert_reading(
-        experiment_id=exp_id,
-        field_key=field_key,
-        camera_id=camera_id,
-        value=primary_value,
-        run_index=run_idx,
-        image_path=target_image_path,
+    """后台线程：执行 run_test_capture 的实际逻辑（委托给 _core_run_test_capture）"""
+    return _core_run_test_capture(
+        exp_id=exp_id,
+        field_key=body_dict["field_key"],
+        camera_id=body_dict["camera_id"],
+        target_instrument_id=body_dict.get("target_instrument_id"),
+        image_path=body_dict.get("image_path"),
+        reading_key=body_dict.get("reading_key"),
+        run_index=body_dict.get("run_index"),
+        precise=body_dict.get("precise", False),
+        camera_mode=body_dict.get("camera_mode"),
     )
-
-    return {
-        "success": True,
-        "readings": [reading],
-        "all_ocr": filtered_readings,
-        "detail": None if (primary_key_final and primary_key_final in numeric_ocr) else "已精准锁定特写，请核对读数"
-    }
 
 
 @app.post("/experiments/{exp_id}/run-test-async")
@@ -899,7 +1156,7 @@ class ReadMultiRequest(BaseModel):
     camera_id: Optional[int] = None
 
 
-@app.post("/api/read-multi-async")
+@app.post("/read-multi-async")
 def read_multi_instruments_async(body: ReadMultiRequest):
     """
     [异步版] Multi-instrument reading endpoint.
@@ -914,102 +1171,42 @@ def read_multi_instruments_async(body: ReadMultiRequest):
 
 @app.get("/config/camera-instruments")
 def get_camera_instruments():
-    """返回相机编号到仪器的映射"""
-    CAMERA_INSTRUMENTS = {
-        "F0": {
-            "name": "超级吴英混调器",
-            "readings": [
-                {"key": "seg1_speed", "label": "段一转速", "unit": "转"},
-                {"key": "seg1_time", "label": "段一时间", "unit": "S"},
-                {"key": "seg2_speed", "label": "段二转速", "unit": "转"},
-                {"key": "seg2_time", "label": "段二时间", "unit": "S"},
-                {"key": "seg3_speed", "label": "段三转速", "unit": "转"},
-                {"key": "seg3_time", "label": "段三时间", "unit": "S"},
-                {"key": "total_time", "label": "总时长", "unit": "S"},
-                {"key": "remaining_time", "label": "剩余时长", "unit": "S"},
-                {"key": "current_segment", "label": "当前段数", "unit": ""},
-                {"key": "current_speed", "label": "当前转速", "unit": "转"},
-                {"key": "high_speed", "label": "高速转速", "unit": "转"},
-                {"key": "high_time", "label": "高速时间", "unit": "S"},
-                {"key": "low_speed", "label": "低速转速", "unit": "转"},
-                {"key": "low_time", "label": "低速时间", "unit": "S"},
-            ],
-        },
-        "F1": {
-            "name": "电子天枰1号",
-            "readings": [{"key": "weight", "label": "重量", "unit": "g"}],
-        },
-        "F2": {
-            "name": "电子天枰2号",
-            "readings": [{"key": "weight", "label": "重量", "unit": "g"}],
-        },
-        "F3": {
-            "name": "PH仪",
-            "readings": [
-                {"key": "ph_value", "label": "pH值", "unit": ""},
-                {"key": "temperature", "label": "温度", "unit": "°C"},
-                {"key": "pts", "label": "PTS值", "unit": "%PTS"},
-            ],
-        },
-        "F4": {
-            "name": "水质检测仪",
-            "readings": [
-                {"key": "date", "label": "检测日期", "unit": ""},
-                {"key": "blank_value", "label": "空白值", "unit": ""},
-                {"key": "test_value", "label": "检测值", "unit": ""},
-                {"key": "absorbance", "label": "吸光度", "unit": ""},
-                {"key": "content_mg_l", "label": "含量", "unit": "mg/L"},
-                {"key": "transmittance", "label": "透光度", "unit": "%"},
-                {"key": "mode", "label": "量程模式", "unit": ""},
-            ],
-        },
-        "F5": {
-            "name": "表界面张力仪",
-            "readings": [
-                {"key": "tension", "label": "张力", "unit": "mN/m"},
-                {"key": "temperature", "label": "温度", "unit": "°C"},
-                {"key": "upper_density", "label": "上层密度", "unit": "g/cm³"},
-                {"key": "lower_density", "label": "下层密度", "unit": "g/cm³"},
-                {"key": "rise_speed", "label": "上升速度", "unit": "mm/min"},
-                {"key": "fall_speed", "label": "下降速度", "unit": "mm/min"},
-            ],
-        },
-        "F6": {
-            "name": "电动搅拌器",
-            "readings": [
-                {"key": "rotation_speed", "label": "转速", "unit": "rpm"},
-                {"key": "torque", "label": "扭矩", "unit": "N/cm"},
-                {"key": "time", "label": "时间", "unit": ""},
-            ],
-        },
-        "F7": {
-            "name": "水浴锅",
-            "readings": [
-                {"key": "temperature", "label": "温度", "unit": "°C"},
-                {"key": "time", "label": "时间", "unit": "min"},
-            ],
-        },
-        "F8": {
-            "name": "6速旋转粘度计",
-            "readings": [
-                {"key": "actual_reading", "label": "实施读数", "unit": ""},
-                {"key": "max_reading", "label": "最大读数", "unit": ""},
-                {"key": "min_reading", "label": "最小读数", "unit": ""},
-                {"key": "rotation_speed", "label": "转速", "unit": "RPM"},
-                {"key": "shear_rate", "label": "剪切速率", "unit": "S-1"},
-                {"key": "shear_stress", "label": "剪切应力", "unit": "Pa"},
-                {"key": "apparent_viscosity", "label": "表观粘度", "unit": "mPa·s"},
-                {"key": "avg_5s", "label": "5秒平均值", "unit": "mPa·s"},
-            ],
-        },
-    }
-    return {"success": True, "cameras": CAMERA_INSTRUMENTS}
+    """返回相机编号到仪器的映射（动态从数据库获取）"""
+    from instrument_reader import DynamicInstrumentLibrary
+    
+    # 获取默认路由表 (F0 -> 0, F1 -> 3, etc.)
+    route_map = DynamicInstrumentLibrary.get_route_map()
+    
+    results = {}
+    for slot_id, camera_id in route_map.items():
+        slot_name = f"F{slot_id}"
+        # slot_id 就是 instrument_type 的数字字符串
+        template = DynamicInstrumentLibrary.get_template(str(slot_id))
+        
+        if template:
+            try:
+                fields_data = json.loads(template['fields_json'])
+            except:
+                fields_data = []
+                
+            results[slot_name] = {
+                "name": template['name'],
+                "readings": [
+                    {"key": f["name"], "label": f["label"], "unit": f.get("unit", "")}
+                    for f in fields_data
+                ]
+            }
+        else:
+            results[slot_name] = {"name": f"原始仪器(F{slot_id})", "readings": []}
+            
+    return {"success": True, "cameras": results}
 
 
 class ManualReadingBody(BaseModel):
     field_key: str
     run_index: int
-    value: float
+    value: Optional[float] = None
+    ocr_data: Optional[Dict[str, Any]] = None
     camera_id: int = 0
 
 
@@ -1023,8 +1220,9 @@ def save_manual_reading(exp_id: int, body: ManualReadingBody):
         experiment_id=exp_id,
         field_key=body.field_key,
         camera_id=body.camera_id,
-        value=body.value,
+        value=body.value if body.value is not None else 0.0,
         run_index=body.run_index,
+        ocr_data=body.ocr_data
     )
     return {"success": True, "reading": reading}
 
@@ -1419,9 +1617,9 @@ def get_llm_config():
     return {
         "success": True,
         "config": {
-            "provider": "openai_compatible",
-            "model_name": Config.LMSTUDIO_MODEL,
-            "base_url": Config.LMSTUDIO_BASE_URL,
+            "provider": "local_vlm",
+            "model_name": "GLM-OCR",
+            "base_url": Config.LOCAL_VLM_PATH,
             "api_key": None,
             "temperature": Config.MODEL_TEMPERATURE,
             "max_tokens": Config.MODEL_MAX_TOKENS,
@@ -1443,7 +1641,7 @@ def set_llm_config(body: LLMConfigUpdate):
     """设置 LLM 模型配置并重建 provider"""
     from backend.services.llm_provider import create_provider, LLMConfig, set_global_provider
 
-    if body.provider not in ("openai_compatible",):
+    if body.provider not in ("openai_compatible", "local_vlm"):
         raise HTTPException(status_code=400, detail=f"不支持的 provider 类型: {body.provider}")
 
     # 如果前端传回脱敏后的 key（包含 ****），保留数据库中的原始 key
@@ -1516,14 +1714,23 @@ def check_llm_status():
     try:
         from backend.services.llm_provider import get_global_provider
         provider = get_global_provider()
-        import httpx
-        if provider.provider_type == "openai_compatible":
-            # LMStudio / OpenAI 兼容: 使用 /v1/models 轻量级检查
-            headers = {}
-            if provider._api_key:
-                headers["Authorization"] = f"Bearer {provider._api_key}"
-            resp = httpx.get(f"{provider._base_url}/v1/models", headers=headers, timeout=5.0)
-            resp.raise_for_status()
+        if provider.provider_type == "local_vlm":
+            import torch
+            gpu_info = None
+            if torch.cuda.is_available():
+                gpu_info = {
+                    "name": torch.cuda.get_device_name(0),
+                    "memory_allocated": f"{torch.cuda.memory_allocated(0) / 1024**2:.2f} MB",
+                    "memory_reserved": f"{torch.cuda.memory_reserved(0) / 1024**2:.2f} MB",
+                }
+            return {
+                "success": True,
+                "status": "ready",
+                "provider": provider.provider_type,
+                "model": provider.model_name,
+                "gpu": gpu_info
+            }
+            
         return {
             "success": True,
             "status": "connected",
@@ -1564,7 +1771,7 @@ def get_system_config():
 
 # ==================== Multi-Instrument Pipeline API ====================
 
-@app.post("/api/read-multi")
+@app.post("/read-multi")
 def read_multi_instruments(body: ReadMultiRequest):
     """Multi-instrument reading endpoint.
     Detects, classifies, and reads all instruments in the image.
@@ -1614,17 +1821,63 @@ def read_multi_instruments(body: ReadMultiRequest):
         return {"success": False, "detections": [], "detail": f"Processing failed: {str(e)}"}
 
 
-@app.post("/api/rebuild-clip-cache")
+@app.post("/rebuild-clip-cache")
 def rebuild_clip_cache():
     """Rebuild CLIP embedding cache after template/reference image changes"""
-    from backend.services.multi_instrument_pipeline import MultiInstrumentPipeline
+    from backend.services.clip_matcher import CLIPInstrumentMatcher
     try:
-        pipeline = MultiInstrumentPipeline()
-        pipeline.rebuild_clip_cache()
+        matcher = CLIPInstrumentMatcher()
+        matcher.invalidate_cache()
         return {"success": True, "message": "CLIP cache rebuilt successfully"}
     except Exception as e:
         logger.error(f"Failed to rebuild CLIP cache: {e}")
         return {"success": False, "detail": str(e)}
+
+
+# 仪器模板与映射管理
+@app.get("/instruments/templates")
+def list_instrument_templates():
+    """获取所有仪器模板（仅返回 F0-F8 核心 9 个仪器）"""
+    templates = get_all_templates()
+    # 为前端格式化：仅返回 F0-F8
+    result = []
+    # 核心仪器 ID 列表 0-8
+    core_ids = [str(i) for i in range(9)]
+    
+    for t in templates:
+        inst_type = t["instrument_type"]
+        if inst_type in core_ids or (inst_type.startswith('F') and inst_type[1:] in core_ids):
+            # 统一展示为 F0, F1... 格式
+            display_type = inst_type if inst_type.startswith('F') else f"F{inst_type}"
+            result.append({
+                "instrument_type": display_type,
+                "name": t["name"],
+                "description": t["description"]
+            })
+    
+    # 按 F0-F8 排序
+    result.sort(key=lambda x: int(x["instrument_type"][1:]))
+    return {"success": True, "templates": result}
+
+
+@app.get("/config/instrument-camera-mapping")
+def get_instrument_mapping():
+    """获取当前的仪器-相机映射配置"""
+    mapping = get_config("instrument_camera_mapping", default={})
+    return {"success": True, "mapping": mapping}
+
+
+@app.post("/config/instrument-camera-mapping")
+def update_instrument_mapping(body: InstrumentMappingUpdate):
+    """手动更新仪器-相机映射配置"""
+    try:
+        # TODO: 校验 instrument_id 是否在模板中，camera_id 是否存在
+        set_config("instrument_camera_mapping", body.mapping)
+        logger.info(f"手动更新仪器映射: {body.mapping}")
+        return {"success": True, "message": "映射配置已更新"}
+    except Exception as e:
+        logger.error(f"更新仪器映射失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

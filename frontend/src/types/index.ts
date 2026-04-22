@@ -25,6 +25,7 @@ export interface Reading {
   confidence?: number
   image_path?: string
   timestamp: string
+  ocr_data?: Record<string, any>
 }
 
 export interface Experiment {
@@ -49,7 +50,7 @@ export interface ExperimentViewProps {
   onRefresh: () => Promise<void>  // 拍照完成后刷新实验数据
 }
 
-export type LLMProviderType = 'openai_compatible'
+export type LLMProviderType = 'openai_compatible' | 'local_vlm'
 
 export interface LLMConfig {
   provider: LLMProviderType
@@ -66,7 +67,13 @@ export interface LLMModel {
   modified_at: string
 }
 
-export type LLMStatus = 'connected' | 'error' | 'loading' | 'unknown'
+export interface GPUInfo {
+  name: string
+  memory_allocated: string
+  memory_reserved: string
+}
+
+export type LLMStatus = 'connected' | 'ready' | 'error' | 'loading' | 'unknown'
 
 export interface TemplateField {
   name: string
@@ -86,4 +93,14 @@ export interface InstrumentTemplate {
   example_images: string[]
   default_tier: number
   created_at?: string
+}
+
+export interface Camera {
+  id: number
+  name: string
+  camera_id: number
+  control_host: string
+  control_port: number
+  mode: string
+  enabled: number
 }

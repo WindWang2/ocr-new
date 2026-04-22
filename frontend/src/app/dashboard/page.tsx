@@ -8,6 +8,7 @@ import Step1TypeSelector from '@/components/CreateExperiment/Step1TypeSelector'
 import Step2Config from '@/components/CreateExperiment/Step2Config'
 import ExperimentDetail from '@/components/ExperimentDetail'
 import LLMSettings from '@/components/SettingsPanel/LLMSettings'
+import InstrumentMatching from '@/components/SettingsPanel/InstrumentMatching'
 import { FlaskConical, Settings, X, Home as HomeIcon } from 'lucide-react'
 import Link from 'next/link'
 import Image from 'next/image'
@@ -148,16 +149,17 @@ export default function Dashboard() {
 
   return (
     <main className="h-screen flex overflow-hidden">
-      {/* Left sidebar - dark themed */}
-      <aside className="w-72 shrink-0 flex flex-col" style={{ background: 'linear-gradient(180deg, #0F1B2D 0%, #162744 100%)' }}>
+      {/* Left sidebar - carbon themed */}
+      <aside className="w-72 shrink-0 flex flex-col" style={{ background: 'linear-gradient(180deg, #121212 0%, #1a1a1a 100%)' }}>
         {/* Sidebar header */}
-        <div className="px-5 py-4 border-b border-white/[0.06]">
+        <div className="px-5 py-6 border-b border-white/[0.05]">
           <Link href="/" className="flex items-center gap-2.5">
-            <Image src="/logo.png" alt="WEWODON" width={120} height={80} className="h-7 w-auto brightness-0 invert opacity-80" />
+             <div className="w-8 h-8 bg-[var(--accent)] rounded flex items-center justify-center text-white font-black text-lg">W</div>
+             <div className="flex flex-col">
+                <span className="text-white text-sm font-black tracking-widest uppercase">WEWODON</span>
+                <span className="text-[9px] text-white/30 font-medium tracking-tight uppercase">AI OCR Laboratory</span>
+             </div>
           </Link>
-          <div className="mt-2 text-[11px] text-white/30 font-medium tracking-wide">
-            智能实验方舱 · 控制台
-          </div>
         </div>
 
         {/* Experiment list fills remaining space */}
@@ -175,102 +177,100 @@ export default function Dashboard() {
       {/* Main content */}
       <div className="flex-1 flex flex-col overflow-hidden" style={{ background: 'var(--bg)' }}>
         {/* Top bar */}
-        <header className="shrink-0 h-14 flex items-center justify-between px-6 bg-white border-b border-gray-100">
-          <div className="flex items-center gap-2">
-            <Link href="/" className="text-gray-300 hover:text-brand-500 transition">
-              <HomeIcon size={15} />
-            </Link>
-            <span className="text-gray-200 text-xs">/</span>
-            <span className="text-xs text-gray-400 font-medium">控制台</span>
+        <header className="shrink-0 h-14 flex items-center justify-between px-6 bg-white border-b border-[var(--border)]">
+          <div className="flex items-center gap-3">
+            <div className="p-1.5 bg-zinc-50 border border-zinc-100 rounded">
+              <HomeIcon size={14} className="text-zinc-400" />
+            </div>
+            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-zinc-400">
+              <span>Main</span>
+              <span className="text-zinc-200">/</span>
+              <span className="text-zinc-800">Dashboard</span>
+            </div>
           </div>
 
           {/* Settings */}
           <div className="relative">
             <button
               onClick={() => setShowSettings(v => !v)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition"
+              className="flex items-center gap-2 px-3 py-1.5 rounded border border-zinc-100 text-[10px] font-bold uppercase tracking-widest text-zinc-500 hover:bg-zinc-50 hover:text-zinc-800 transition"
             >
-              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                llmStatus === 'connected' ? 'bg-emerald-400' :
-                llmStatus === 'error' ? 'bg-red-400' :
-                'bg-amber-400'
+              <div className={`w-2 h-2 rounded-full shrink-0 ${
+                llmStatus === 'connected' || llmStatus === 'ready' ? 'status-dot-active' :
+                llmStatus === 'error' ? 'bg-red-500' :
+                'bg-zinc-300'
               }`} />
-              <Settings size={14} />
-              设置
+              <Settings size={13} className="text-zinc-400" />
+              Settings
               {mockEnabled && (
-                <span className="px-1.5 py-0.5 bg-amber-50 text-amber-600 text-[10px] font-medium rounded">Mock</span>
+                <span className="px-1.5 py-0.5 bg-amber-50 text-amber-600 border border-amber-100 rounded-[2px]">MOCK</span>
               )}
             </button>
 
             {showSettings && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setShowSettings(false)} />
-                <div className="absolute right-0 top-9 w-72 bg-white rounded-xl shadow-xl border border-gray-100 p-4 z-50 max-h-[480px] overflow-y-auto">
-                  <div className="flex justify-between items-center mb-4">
-                    <span className="font-semibold text-gray-800 text-sm">系统设置</span>
-                    <button onClick={() => setShowSettings(false)} className="text-gray-300 hover:text-gray-500 transition">
-                      <X size={15} />
+                <div className="absolute right-0 top-10 w-80 bg-white rounded-[var(--radius-md)] shadow-2xl border border-[var(--border)] p-0 z-50 max-h-[85vh] overflow-hidden flex flex-col">
+                  <div className="module-header shrink-0">
+                    <span className="module-title">System Control Center</span>
+                    <button onClick={() => setShowSettings(false)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition">
+                      <X size={14} />
                     </button>
                   </div>
-
-                  <div className="flex items-center justify-between py-2">
-                    <div>
-                      <div className="text-sm font-medium text-gray-700">Mock 相机模式</div>
-                      <div className="text-[11px] text-gray-400 mt-0.5">
-                        跳过 TCP，读取本地图片做 OCR 测试
+                  
+                  <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                    {/* Mock Toggle Module */}
+                    <div className="p-3 bg-zinc-50 border border-zinc-100 rounded-[var(--radius-sm)] flex items-center justify-between">
+                      <div>
+                        <div className="text-[11px] font-bold text-zinc-800 uppercase tracking-tight">Virtual Optics</div>
+                        <div className="text-[9px] text-zinc-400 mt-0.5 uppercase">Bypass TCP camera stream</div>
                       </div>
+                      <button
+                        onClick={async () => {
+                          const next = !mockEnabled
+                          await setMockConfig(next).catch(() => {})
+                          setMockEnabled(next)
+                        }}
+                        className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors ${
+                          mockEnabled ? 'bg-[var(--accent)]' : 'bg-zinc-200'
+                        }`}
+                      >
+                        <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow-sm transition-transform ${
+                          mockEnabled ? 'translate-x-4.5' : 'translate-x-0.5'
+                        }`} />
+                      </button>
                     </div>
-                    <button
-                      onClick={async () => {
-                        const next = !mockEnabled
-                        await setMockConfig(next).catch(() => {})
-                        setMockEnabled(next)
-                      }}
-                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                        mockEnabled ? 'bg-amber-500' : 'bg-gray-200'
-                      }`}
-                    >
-                      <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform ${
-                        mockEnabled ? 'translate-x-4' : 'translate-x-0.5'
-                      }`} />
-                    </button>
-                  </div>
 
-                  {mockEnabled && (
-                    <p className="text-[11px] text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mt-1">
-                      已开启：拍照将读取 image_dir/F&#123;id&#125;/ 目录最新图片
-                    </p>
-                  )}
-
-                  {/* 图片存储目录 */}
-                  <div className="mt-3 pt-3 border-t border-gray-50">
-                    <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">图片存储目录</div>
+                    {/* Image Directory Module */}
+                    <div className="space-y-2">
+                      <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Storage Matrix</div>
                       <div className="flex gap-2">
                         <input
                           type="text"
                           value={imageDir}
                           onChange={e => setImageDirState(e.target.value)}
-                          placeholder="留空使用默认 camera_images/"
-                          className="flex-1 text-xs border border-gray-200 rounded-lg px-3 py-1.5 bg-gray-50"
+                          placeholder="Default repository..."
+                          className="flex-1 text-[11px] font-mono-num border border-zinc-200 rounded px-2 py-1.5 bg-zinc-50 focus:bg-white transition-colors"
                         />
                         <button
                           onClick={async () => {
                             await setImageDir(imageDir).catch(() => {})
                           }}
-                          className="px-3 py-1.5 text-xs font-medium text-white rounded-lg shrink-0"
-                          style={{ background: 'var(--brand)' }}
+                          className="px-3 py-1.5 text-[10px] font-bold text-white bg-zinc-800 rounded hover:bg-black transition-colors"
                         >
-                          保存
+                          SAVE
                         </button>
                       </div>
-                      <p className="text-[10px] text-gray-400 mt-1.5">
-                        {mockEnabled ? 'Mock 模式' : '拍照模式'}将读取该目录下 F0 ~ F8 子文件夹的最新图片
-                      </p>
                     </div>
 
-                  <div className="border-t border-gray-50 mt-3 pt-3">
-                    <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">LLM 模型</div>
-                    <LLMSettings onStatusChange={setLlmStatus} />
+                    <div className="border-t border-zinc-100 pt-3">
+                      <InstrumentMatching mockEnabled={mockEnabled} />
+                    </div>
+
+                    <div className="border-t border-zinc-100 pt-3">
+                      <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-3">Neural Engine</div>
+                      <LLMSettings onStatusChange={setLlmStatus} />
+                    </div>
                   </div>
                 </div>
               </>

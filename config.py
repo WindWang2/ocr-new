@@ -22,14 +22,17 @@ def _env(key: str, default, cast=None):
 class Config:
     """系统配置（支持环境变量覆盖）"""
 
-    # LMStudio 配置（OpenAI 兼容 API）
-    LMSTUDIO_BASE_URL = _env("LMSTUDIO_BASE_URL", "http://192.168.31.127:1234")
+    # Llama.cpp 配置（OpenAI 兼容 API）
+    LMSTUDIO_BASE_URL = _env("LMSTUDIO_BASE_URL", "http://127.0.0.1:8080")
     LMSTUDIO_MODEL = _env("LMSTUDIO_MODEL", "2b-new")
-    LMSTUDIO_OCR_MODEL = _env("LMSTUDIO_OCR_MODEL", "ocr")
-    DEFAULT_LLM_PROVIDER = _env("DEFAULT_LLM_PROVIDER", "openai_compatible")
+    LMSTUDIO_OCR_MODEL = _env("LMSTUDIO_OCR_MODEL", "2b-new")
+    
+    # 本地 VLM 配置 (Transformers)
+    LOCAL_VLM_PATH = _env("LOCAL_VLM_PATH", r"C:\Users\wangj.KEVIN\projects\GLM-OCR")
+    DEFAULT_LLM_PROVIDER = _env("DEFAULT_LLM_PROVIDER", "local_vlm")
 
     # 模型推理参数
-    MODEL_TEMPERATURE = _env("MODEL_TEMPERATURE", 0.1, float)
+    MODEL_TEMPERATURE = _env("MODEL_TEMPERATURE", 0.0, float)
     MODEL_MAX_TOKENS = _env("MODEL_MAX_TOKENS", 4000, int)
 
     # 图片格式
@@ -82,3 +85,9 @@ class Config:
             "image_resize_enabled": cls.IMAGE_RESIZE_ENABLED,
             "image_max_size": cls.IMAGE_MAX_SIZE,
         }
+
+    @classmethod
+    def update_image_dir(cls, new_path: str):
+        """动态更新图片存储目录"""
+        if new_path:
+            cls.CAMERA_IMAGE_DIR = new_path

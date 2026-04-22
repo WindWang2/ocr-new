@@ -1,4 +1,4 @@
-import { Experiment, ExperimentSummary, Reading, InstrumentFieldConfig, ManualParams, ExperimentType, LLMConfig, LLMModel, LLMStatus, InstrumentTemplate } from '@/types'
+import { Experiment, ExperimentSummary, Reading, InstrumentFieldConfig, ManualParams, ExperimentType, LLMConfig, LLMModel, LLMStatus, InstrumentTemplate, Camera } from '@/types'
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || '/api'
 
@@ -150,6 +150,16 @@ export async function checkLLMStatus(): Promise<{ success: boolean; status: LLMS
   return request('/config/llm/status')
 }
 
+export async function matchInstruments(): Promise<{ 
+  success: boolean; 
+  mapping: Record<string, number>; 
+  summary: { instrument_id: number; instrument_name: string; camera_id: number; confidence: number }[];
+  scan_details: any[];
+  detail?: string;
+}> {
+  return request('/cameras/match_instruments', { method: 'POST' })
+}
+
 export async function getCameraInstruments(): Promise<Record<string, { name: string; readings: { key: string; label: string; unit: string }[] }>> {
   const data = await request<{ success: boolean; cameras: Record<string, { name: string; readings: { key: string; label: string; unit: string }[] }> }>('/config/camera-instruments')
   return data.cameras
@@ -181,6 +191,22 @@ interface RunTestBody {
   camera_mode?: string
 }
 
+export async function triggerInstrument(
+  experimentId: number,
+  fieldKey: string,
+  instrumentId: number,
+): Promise<{ success: boolean; image_path?: string; cropped_image_path?: string; camera_id?: number; detail?: string }> {
+  const data = await request<{ success: boolean; image_path?: string; cropped_image_path?: string; camera_id?: number; detail?: string }>(
+    `/experiments/${experimentId}/auto-trigger`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ field_key: fieldKey, target_instrument_id: instrumentId }),
+    },
+  )
+  if (!data.success) throw new Error(data.detail || '触发采集失败')
+  return data
+}
+
 export async function runTestCapture(
   experimentId: number,
   fieldKey: string,
@@ -191,7 +217,7 @@ export async function runTestCapture(
   precise?: boolean,
   cameraMode?: string,
   targetInstrumentId?: number,
-): Promise<{ success: boolean; readings?: Reading[]; all_ocr?: Record<string, number | string | null>; detail?: string }> {
+): Promise<{ success: boolean; readings?: Reading[]; all_ocr?: Record<string, number | string | null>; image_path?: string; detail?: string }> {
   const body: RunTestBody = { field_key: fieldKey, camera_id: cameraId }
   if (targetInstrumentId !== undefined) body.target_instrument_id = targetInstrumentId
   if (imagePath) body.image_path = imagePath
@@ -199,30 +225,41 @@ export async function runTestCapture(
   if (runIndex !== undefined) body.run_index = runIndex
   if (precise) body.precise = true
   if (cameraMode) body.camera_mode = cameraMode
-  const data = await request<{ success: boolean; readings?: Reading[]; all_ocr?: Record<string, number | string | null>; detail?: string }>(
+  const data = await request<{ success: boolean; readings?: Reading[]; all_ocr?: Record<string, number | string | null>; image_path?: string; detail?: string }>(
     `/experiments/${experimentId}/run-test`,
     { method: 'POST', body: JSON.stringify(body) },
   )
-  // 即使识别失败，如果有 all_ocr 数据也返回给前端展示（不抛出）
-  if (!data.success && !data.all_ocr) throw new Error(data.detail || '识别失败')
+  // 即使识别失败，如果有 all_ocr 或 image_path 数据也返回给前端展示（不抛出）
+  if (!data.success && !data.all_ocr && !data.image_path) throw new Error(data.detail || '识别失败')
   return data
 }
 
 export async function saveManualReading(
-  experimentId: number,
-  fieldKey: string,
-  runIndex: number,
-  value: number,
-  cameraId: number = 0,
-): Promise<Reading> {
-  const data = await request<{ success: boolean; reading: Reading }>(
-    `/experiments/${experimentId}/readings`,
-    {
-      method: 'PUT',
-      body: JSON.stringify({ field_key: fieldKey, run_index: runIndex, value, camera_id: cameraId }),
-    },
-  )
-  return data.reading
+  experimentId: number, 
+  fieldKey: string, 
+  runIndex: number, 
+  value: number | null, 
+  instrumentId: number,
+  ocrData?: Record<string, any>
+) {
+  return request(`/experiments/${experimentId}/readings`, {
+    method: 'PUT',
+    body: JSON.stringify({ 
+      field_key: fieldKey, 
+      run_index: runIndex, 
+      value: value, 
+      camera_id: instrumentId,
+      ocr_data: ocrData
+    }),
+  })
+}
+
+/**
+ * 获取所有仪器的配置（包含每个仪器有哪些读数项）
+ */
+export async function getCameraInstrumentsConfig() {
+  const data = await request<{ success: boolean; cameras: any }>('/config/camera-instruments')
+  return data.cameras as Record<string, { name: string, readings: { key: string, label: string, unit: string }[] }>
 }
 
 export async function getImageDir(): Promise<string> {
@@ -247,4 +284,29 @@ export async function saveTemplate(template: InstrumentTemplate): Promise<void> 
     method: 'POST',
     body: JSON.stringify(template),
   })
+}
+
+/**
+ * 仪表对位相关 API
+ */
+export async function getCoreInstrumentTemplates(): Promise<InstrumentTemplate[]> {
+  const data = await request<{ success: boolean; templates: InstrumentTemplate[] }>('/instruments/templates')
+  return data.templates
+}
+
+export async function getInstrumentMapping(): Promise<Record<string, number>> {
+  const data = await request<{ success: boolean; mapping: Record<string, number> }>('/config/instrument-camera-mapping')
+  return data.mapping
+}
+
+export async function updateInstrumentMapping(mapping: Record<string, number>): Promise<void> {
+  await request('/config/instrument-camera-mapping', {
+    method: 'POST',
+    body: JSON.stringify({ mapping }),
+  })
+}
+
+export async function listEnabledCameras(): Promise<Camera[]> {
+  const data = await request<{ success: boolean; cameras: Camera[] }>('/cameras?enabled_only=true')
+  return data.cameras
 }

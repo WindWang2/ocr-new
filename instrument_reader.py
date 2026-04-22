@@ -1,7 +1,7 @@
 """
 仪器读数识别系统
 核心逻辑：YOLO26x 目标检测与分类 -> 自动裁剪特写 -> 多模态 LLM 读数
-后端支持：LMStudio (OpenAI 兼容 API)
+后端支持：Llama.cpp (OpenAI 兼容 API)
 """
 
 import os
@@ -37,19 +37,42 @@ def get_pydantic_model_for_instrument(instrument_type: str):
     return DynamicModel
 
 class DynamicInstrumentLibrary:
-    # 仪器到物理相机的路由映射 (F0-F8 -> 物理相机 ID)
-    INSTRUMENT_TO_CAMERA_ROUTE = {
+    # 默认值 (F0-F8 -> 物理相机 ID)
+    _DEFAULT_ROUTE = {
         0: 0, 1: 3, 2: 3, 3: 3, 4: 5, 5: 5, 6: 7, 7: 7, 8: 8
     }
 
     @classmethod
+    def get_route_map(cls) -> Dict[int, int]:
+        """获取仪器到物理相机的路由映射"""
+        try:
+            from backend.models.database import get_config
+            # 数据库存储格式为字符串键 {"0": 0, "1": 3, ...}
+            saved = get_config("instrument_camera_mapping", default=None)
+            if saved:
+                # 转换回整数键
+                return {int(k): int(v) for k, v in saved.items()}
+        except Exception as e:
+            logger.warning(f"Failed to load dynamic route map: {e}")
+        
+        return cls._DEFAULT_ROUTE
+
+    @classmethod
     def get_physical_camera_id(cls, instrument_id: int) -> int:
         """根据仪器 ID 获取对应的物理相机 ID"""
-        return cls.INSTRUMENT_TO_CAMERA_ROUTE.get(instrument_id, instrument_id)
+        route = cls.get_route_map()
+        res = route.get(instrument_id, instrument_id)
+        print(f"\n[ROUTE_DEBUG] instrument_id={instrument_id} -> physical_camera_id={res} (Map: {route})\n")
+        return res
 
     @classmethod
     def get_template(cls, instrument_type):
-        t = get_template(instrument_type)
+        # 兼容处理：将 F1, F2 等转换为数据库中的 1, 2
+        lookup_type = str(instrument_type)
+        if lookup_type.startswith('F'):
+            lookup_type = lookup_type[1:]
+            
+        t = get_template(lookup_type)
         if t:
             t['fields'] = json.loads(t['fields_json'])
             t['keywords'] = json.loads(t['keywords_json'])
@@ -81,124 +104,36 @@ class DynamicInstrumentLibrary:
         return ""
 
     @classmethod
-    def get_camera_prompt(cls, camera_name: str) -> str:
-        """根据相机编号获取对应的 Prompt"""
-        return cls.INSTRUMENT_TEMPLATES.get(camera_name, "")
-
-    # 相机编号到仪器的映射（来源：相机.xlsx）
-    INSTRUMENT_TEMPLATES = {
-        "F0": """这是超级吴英混调器（SN: 258795）控制屏幕。请先判断当前是自动模式还是手动模式（看左侧菜单哪个选项高亮），然后读取对应数值。
-
-自动模式字段：seg1_speed(段一转速,转)、seg1_time(段一时间,S)、seg2_speed(段二转速,转)、seg2_time(段二时间,S)、seg3_speed(段三转速,转)、seg3_time(段三时间,S)、total_time(总时长,S)、remaining_time(剩余时长,S)、current_segment(当前段数)、current_speed(当前转速,转)
-
-手动模式：屏幕中间有一个表格，列标题为"转速(转)"和"时间(S)"，两行分别为"高速"和"低速"。从表格中读取：
-- high_speed = "高速"行、"转速(转)"列的数字
-- high_time = "高速"行、"时间(S)"列的数字
-- low_speed = "低速"行、"转速(转)"列的数字
-- low_time = "低速"行、"时间(S)"列的数字
-表格下方还有：remaining_time(剩余时间,S)、current_speed(当前转速,转)
-
-【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-
-自动模式：{"mode": "auto", "seg1_speed": 0, "seg1_time": 0, "seg2_speed": 0, "seg2_time": 0, "seg3_speed": 0, "seg3_time": 0, "total_time": 0, "remaining_time": 0, "current_segment": 0, "current_speed": 0}
-手动模式：{"mode": "manual", "high_speed": 0, "high_time": 0, "low_speed": 0, "low_time": 0, "remaining_time": 0, "current_speed": 0}
-
-只输出一行JSON，数值为纯数字不含单位，无法读取的值设为null。
-""",
-        "F1": """这是电子天枰1号（SN: 53662），读取屏幕显示的重量数值。
-
-【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"weight": 0.00}
-
-注意：仔细辨认小数点位置（LED数码管上小数点很小），数值单位为g，只输出纯数字不含单位。
-""",
-        "F2": """这是电子天枰2号（SN: 230199），读取屏幕显示的重量数值。
-
-【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"weight": 0.00}
-
-注意：仔细辨认小数点位置（LED数码管上小数点很小），数值单位为g，只输出纯数字不含单位。
-""",
-        "F3": """这是PH仪（SN: 176585），读取屏幕上的三个数值：pH值(ph_value)、温度(temperature,°C,MTC)、PTS值(pts,%PTS)。
-
-【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"ph_value": 0.00, "temperature": 0.0, "pts": 0.0}
-
-注意：pH值通常带2位小数，温度带1位小数，PTS通常为100.0。只输出一行JSON，数值不含单位，无法读取设为null。
-""",
-        "F4": """这是水质检测仪（SN: 43373），检测总硬度。请先判断当前是高量程还是低量程模式，然后读取屏幕显示的所有数值。
-
-读数字段：当前量程模式(mode)、检测日期(date)、空白值(blank_value)、检测值(test_value)、吸光度(absorbance)、含量mg/L(content_mg_l)、透光度%(transmittance)
-
-【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"mode": "high", "date": "", "blank_value": 0, "test_value": 0, "absorbance": 0.000, "content_mg_l": 0.00, "transmittance": 0.0}
-
-注意：mode字段为"high"（高量程）或"low"（低量程），date字段为字符串（格式xxxx-xx-xx xx:xx:xx），其他字段为数值，无法读取设为null。只输出一行JSON。
-""",
-        "F5": """这是表界面张力仪（SN: 101663），读取屏幕上的六个数值：表/界面张力(tension,nN/m)、温度(temperature,°C)、上层密度(upper_density,g/cm3)、下层密度(lower_density,g/cm3)、上升速度(rise_speed,mm/min)、下降速度(fall_speed,mm/min)。
-
-【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"tension": 0.000, "temperature": 0.0, "upper_density": 0.000, "lower_density": 0.000, "rise_speed": 0, "fall_speed": 0}
-
-注意：张力通常带3位小数，可能为负数；温度若显示N/A则设为null；F值旁的-/+是按钮不是正负号。只输出一行JSON，数值不含单位。
-""",
-        "F6": """这是电动搅拌器（SN: 208721），屏幕显示三行数值：第一行转速(rotation_speed,rpm)、第二行张力(torque,N/cm)、第三行时间(time,XX:XX)。
-
-【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"rotation_speed": 0, "torque": 0, "time": "00:00"}
-
-注意：time字段保留MM:SS字符串格式；torque可能显示为00表示0N/cm。只输出一行JSON，数值不含单位。
-""",
-        "F7": """这是水浴锅（SN: 37844），读取屏幕显示的温度(temperature,°C)和定时时间(time,min)。
-
-【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"temperature": 0.0, "time": 0}
-
-注意：TEMP标签下方为温度（通常带1位小数，LED数码管小数点很小，如"17.3"），TIME标签下方为时间（整数分钟）。只输出一行JSON，数值不含单位。
-""",
-        "F8": """这是6速旋转粘度计（SN: 106833），读取屏幕上的八个数值：实施读数(actual_reading)、最大读数(max_reading)、最小读数(min_reading)、转速(rotation_speed,RPM)、剪切速率(shear_rate,S-1)、剪切应力(shear_stress,Pa)、表观粘度(apparent_viscosity,mpa.s)、5秒平均值(avg_5s,mpa.s)。
-
-【重要】严格按以下JSON格式输出，不要输出任何其他内容：
-{"actual_reading": 0, "max_reading": 0, "min_reading": 0, "rotation_speed": 0, "shear_rate": 0, "shear_stress": 0.000, "apparent_viscosity": 0.0, "avg_5s": 0.0}
-
-只输出一行JSON，数值不含单位，无法读取设为null。
-""",
-    }
-
-    CAMERA_INSTRUMENT_NAMES = {
-        "F0": "超级吴英混调器",
-        "F1": "电子天枰1号",
-        "F2": "电子天枰2号",
-        "F3": "PH仪",
-        "F4": "水质检测仪",
-        "F5": "表界面张力仪",
-        "F6": "电动搅拌器",
-        "F7": "水浴锅",
-        "F8": "6速旋转粘度计",
-    }
+    def get_camera_prompt(cls, camera_name_or_id: str) -> str:
+        """根据相机代号（如 F3）或仪器 ID 获取对应的 Prompt（动态从数据库获取）"""
+        inst_type_id = str(camera_name_or_id).replace('F', '').replace('f', '')
+        t = cls.get_template(inst_type_id)
+        if t:
+            return t.get('prompt_template', "")
+        return ""
 
     @classmethod
-    def get_instrument_prompt(cls, camera_name: str) -> str:
-        return cls.INSTRUMENT_TEMPLATES.get(camera_name.upper(), "")
+    def get_instrument_prompt(cls, instrument_type: str) -> str:
+        """获取仪器类型的 Prompt"""
+        return cls.get_camera_prompt(instrument_type)
+    # Legacy hardcoded templates removed - using database driven lookup in get_camera_prompt
 
     @classmethod
-    def get_instrument_type_from_camera(cls, camera_name: str, parsed: dict) -> str:
-        static_map = {
-            "F1": "electronic_balance",
-            "F2": "electronic_balance",
-            "F3": "ph_meter",
-            "F4": "water_quality_meter",
-            "F5": "surface_tension_meter",
-            "F6": "torque_stirrer",
-            "F7": "temperature_controller",
-            "F8": "viscometer_6speed",
-        }
-        if camera_name in static_map:
-            return static_map[camera_name]
-        if camera_name == "F0":
-            mode = parsed.get("mode", "auto")
-            return "wuying_mixer_auto" if mode == "auto" else "wuying_mixer_manual"
-        return camera_name.lower()
+    def get_instrument_type_from_camera(cls, camera_name: str, parsed: dict = None) -> str:
+        """从相机代号获取仪器显示名称（动态从数据库获取）"""
+        try:
+            inst_type_id = str(camera_name).replace('F', '').replace('f', '')
+            from backend.models.database import get_template
+            t = get_template(inst_type_id)
+            if t:
+                # 如果是混料器，根据模式返回更详细的显示名
+                if inst_type_id == "0" and parsed:
+                    mode = parsed.get("mode", "auto")
+                    return f"{t['name']}({mode})"
+                return t['name']
+        except Exception:
+            pass
+        return "未知仪器"
 
     @classmethod
     def identify_instrument_prompt(cls) -> str:
@@ -231,7 +166,7 @@ class DynamicInstrumentLibrary:
 
 
 class MultimodalModelReader:
-    """多模态大模型读取器（LMStudio 后端）"""
+    """多模态大模型读取器（Llama.cpp 后端）"""
 
     def __init__(self, model_name: str = None, base_url: str = None, provider=None):
         """
@@ -246,12 +181,18 @@ class MultimodalModelReader:
             self.model_name = provider.model_name
             self.base_url = ""
         else:
-            self.base_url = base_url or Config.LMSTUDIO_BASE_URL
-            self.model_name = model_name or Config.LMSTUDIO_MODEL
-
             from backend.services.llm_provider import create_provider, LLMConfig
+            
+            self.provider_type = Config.DEFAULT_LLM_PROVIDER
+            self.model_name = model_name or Config.LMSTUDIO_MODEL
+            
+            if self.provider_type == "local_vlm":
+                self.base_url = Config.LOCAL_VLM_PATH
+            else:
+                self.base_url = base_url or Config.LMSTUDIO_BASE_URL
+
             self._provider = create_provider(LLMConfig(
-                provider=Config.DEFAULT_LLM_PROVIDER,
+                provider=self.provider_type,
                 model_name=self.model_name,
                 base_url=self.base_url,
             ))
@@ -259,14 +200,8 @@ class MultimodalModelReader:
         logger.info("使用 LLM 后端, 模型: %s", self.model_name)
 
     def analyze_image(self, image_source: Union[str, Image.Image], prompt: str, call_type: str = "unknown", instrument_type: str = None) -> Dict[str, Any]:
-        """使用多模态模型分析图片
-
-        Args:
-            image_source: 图片路径或 PIL Image 对象
-            prompt: 提示词
-            call_type: 调用类型（identify/read），用于保存调试文件
-            instrument_type: 仪器类型，若提供则执行 Pydantic 校验
-        """
+        """Analyze image using Multimodal LLM"""
+        print(f"\n!!!!!!!! [OCR_DEBUG] analyze_image CALLED: call_type={call_type}, instrument={instrument_type} !!!!!!!!\n")
         try:
             # 读取图片，统一转为 RGB JPEG 发送（兼容灰度图、BMP 等格式）
             from PIL import Image
@@ -303,9 +238,22 @@ class MultimodalModelReader:
                         except Exception as e:
                             logger.warning(f"Failed to load example image {ex_path}: {e}")
 
+            # 构建消息列表：系统提示词 + 用户提示词
+            # 系统提示词强制模型仅输出 JSON
+            system_prompt = (
+                "You are a professional industrial instrument reading assistant. "
+                "You MUST output raw JSON only. Do not provide any analysis, explanation, or conversational filler. "
+                "Strictly follow the JSON schema provided in the user prompt."
+            )
+            
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ]
+
             # 调用 LLM Provider
             result_text = self._provider.chat(
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
                 images=base64_images,
                 temperature=Config.MODEL_TEMPERATURE,
                 max_tokens=Config.MODEL_MAX_TOKENS,
@@ -346,15 +294,15 @@ class MultimodalModelReader:
             return {"error": f"Validation failed: {str(e)}", "raw_parsed": parsed_json}
 
     def _parse_json_response(self, text: str) -> Dict[str, Any]:
-        """解析JSON响应（支持嵌套JSON、Markdown代码块）"""
-        # 清理文本
+        """Parse JSON response, supporting nested JSON and Markdown code blocks"""
+        # Clean text
         text = text.strip()
 
-        # 移除省略号 ...
+        # Remove ellipses
         text = re.sub(r',\s*\.\.\.\s*', '', text)
         text = re.sub(r'\.\.\.', '', text)
 
-        # 尝试提取 Markdown 代码块中的 JSON
+        # Try to extract JSON from Markdown code blocks
         code_block_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', text)
         if code_block_match:
             json_text = code_block_match.group(1).strip()
@@ -371,10 +319,16 @@ class MultimodalModelReader:
 
         try:
             # 提取最外层的 JSON 对象（支持嵌套大括号）
+            # 针对 2b 模型经常爱输出推理文字的情况，如果我们找不到 {，尝试寻找 JSON 常见的起始标志
             start = text.find('{')
             if start == -1:
-                logger.warning("响应中未找到JSON对象: %s", text[:200])
-                return {"error": "响应中未找到JSON对象", "raw_text": text}
+                # 尝试修复：如果模型输出了 "JSON: {" 或类似内容
+                match = re.search(r'\{', text)
+                if match:
+                    start = match.start()
+                else:
+                    logger.warning("响应中未找到JSON对象: %s", text[:200])
+                    return {"error": "响应中未找到JSON对象", "raw_text": text}
 
             depth = 0
             # 优先从后往前找最后一个完整的JSON对象
@@ -502,9 +456,9 @@ class InstrumentReader:
             logger.info("模型: %s", provider.model_name)
             self.mm_reader = MultimodalModelReader(provider=provider)
         else:
-            logger.info("后端: LMStudio")
-            logger.info("模型: %s", model_name or Config.LMSTUDIO_MODEL)
             self.mm_reader = MultimodalModelReader(model_name=model_name)
+            logger.info("后端: %s", self.mm_reader.provider_type)
+            logger.info("模型: %s", self.mm_reader.model_name)
 
         logger.info("系统初始化完成！")
 
@@ -536,115 +490,172 @@ class InstrumentReader:
 
         return None
 
-    def read_instrument(self, image_path: str, camera_name: str = None) -> Dict[str, Any]:
-        """
-        读取仪器读数。
-        首先使用 YOLO 检测目标，根据 class_id 确定仪器类型 (F0-F8)，
-        裁剪出对应的区域，然后调用多模态大模型进行读取。
-
-        Args:
-            image_path: 图片路径
-            camera_name: 可选，为兼容旧版保留，现主要通过 YOLO 决定。
-        Returns:
-            包含识别结果的字典（如果检测到多个目标，返回一个包含多结果的字典列表或重构格式）
-        """
-        logger.info("处理图片: %s", image_path)
-        
-        from backend.services.yolo_detector import YOLOInstrumentDetector
+    def detect_only(self, image_path: str) -> Dict[str, Any]:
+        """仅运行检测并返回裁剪图路径，不进行读取"""
+        print(f"\n[DEBUG_DETECT] Entering detect_only: {image_path}\n")
         from PIL import Image
-        import os
         from pathlib import Path
-        
-        # Ensure path is absolute to avoid working directory issues
-        if not os.path.isabs(image_path):
-            base_dir = Path(__file__).parent
-            image_path = str(base_dir / "camera_images" / image_path)
-            if not os.path.exists(image_path):
-                 # Try directly under base_dir if the path already included camera_images
-                 fallback_path = str(base_dir / image_path.replace("camera_images/", ""))
-                 if os.path.exists(fallback_path):
-                     image_path = fallback_path
-                     
-        # 懒加载 YOLO 并在内存中保持（如果需要可以做成实例变量，但这里简单实例化）
+
+        # 懒加载 YOLO
         if not hasattr(self, 'yolo_detector'):
-            logger.info("初始化 YOLO 检测器...")
-            # 注意：请确保 /home/kevin/projects/ocr-new/models/yolo_instrument.pt 存在
+            print("[DEBUG_DETECT] Initializing YOLO...")
+            from backend.services.yolo_detector import YOLOInstrumentDetector
             self.yolo_detector = YOLOInstrumentDetector(confidence_threshold=0.1, iou_threshold=0.15)
             
         try:
             img = Image.open(image_path)
-            # Resize image similarly to how it was done in training if needed, but YOLO handles it
         except Exception as e:
             return {"success": False, "error": f"YOLO_IMAGE_OPEN_ERR [{image_path}]: {e}"}
 
         detections = self.yolo_detector.detect(img)
-        
+        print(f"\n[DEBUG_DETECT] YOLO found {len(detections)} targets\n")
         if not detections:
-            logger.warning("未检测到任何仪器目标，退回旧版全图识别流程...")
-            return self._read_by_identification(image_path)
-            
-        logger.info(f"YOLO 检测到 {len(detections)} 个目标")
-        
+            logger.info("YOLO 未检测到任何目标")
+            return {"success": False, "error": "未检出结果"}
+
+        logger.info("YOLO 检测到 %d 个目标", len(detections))
+
         all_results = []
-        for i, det in enumerate(detections):
+        for det in detections:
             x1, y1, x2, y2, yolo_conf, class_id = det
-            
-            # Map class_id to camera_name (e.g., 0 -> F0, 1 -> F1)
             detected_camera_name = f"F{int(class_id)}"
-            logger.info(f"目标 {i+1}: 类别={detected_camera_name}, 置信度={yolo_conf:.2f}, 坐标=[{x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f}]")
             
-            # Crop image
+            # Crop image (from original high-res img)
             cropped_img = self.yolo_detector.crop_instrument(img, det, padding=15)
             
-            # Save cropped image to camera_images/crops/
-            # Generate a unique name based on original image and class
+            # Resize crop precisely for LLM (max side 500px)
+            if Config.IMAGE_RESIZE_ENABLED:
+                w, h = cropped_img.size
+                max_dim = max(w, h)
+                if max_dim > Config.IMAGE_MAX_SIZE:
+                    scale = Config.IMAGE_MAX_SIZE / max_dim
+                    new_w, new_h = int(w * scale), int(h * scale)
+                    cropped_img = cropped_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                    logger.info(f"Crop resized: {w}x{h} -> {new_w}x{new_h}")
+            
+            # Save cropped image
             orig_path = Path(image_path)
             crops_dir = orig_path.parent / "crops"
             crops_dir.mkdir(parents=True, exist_ok=True)
             
-            # Create a safe, unique filename
             timestamp = __import__("time").strftime("%H%M%S")
             crop_filename = f"{orig_path.stem}_crop_{detected_camera_name}_{timestamp}.jpg"
             crop_path = crops_dir / crop_filename
             cropped_img.save(crop_path, "JPEG", quality=90)
             
-            # Make the path relative to the camera_images root for the frontend
-            # The original path is typically camera_images/F0/xxx.jpg
-            # We want to return something like F0/crops/xxx.jpg
+            # Relative path for frontend
+            # Robust relative path calculation:
+            # 1. Try to find the camera folder (F0, F1...) as the root
+            # 2. Try to find 'camera_images' as the root
+            # 3. Fallback to a simpler relative path
+            relative_crop_path = None
             try:
-                # Find the index of camera_images in the path parts
                 parts = crop_path.parts
-                ci_idx = parts.index("camera_images")
-                relative_crop_path = "/".join(parts[ci_idx+1:])
-            except ValueError:
-                # Fallback if camera_images is not in path
+                # Search from the end for the first 'F{digit}' folder
+                for i in range(len(parts) - 1, -1, -1):
+                    if re.match(r'^F\d+$', parts[i]):
+                        relative_crop_path = "/".join(parts[i:])
+                        break
+                
+                if not relative_crop_path:
+                    if "camera_images" in parts:
+                        ci_idx = parts.index("camera_images")
+                        relative_crop_path = "/".join(parts[ci_idx+1:])
+                    else:
+                        # Fallback: F{class_id}/crops/filename
+                        relative_crop_path = f"{detected_camera_name}/crops/{crop_filename}"
+            except Exception:
                 relative_crop_path = f"crops/{crop_filename}"
+                
+            all_results.append({
+                "success": True,
+                "bbox": [float(x1), float(y1), float(x2), float(y2)], # Ensure JSON serializable
+                "yolo_confidence": float(yolo_conf),
+                "class_id": int(class_id),
+                "cropped_image_path": relative_crop_path.replace("\\", "/"), # Cross-platform
+                "image_source": crop_path 
+            })
+            
+        return {"success": True, "results": all_results}
+
+    def read_instrument(self, image_path: str, target_class_id: int = None) -> Dict[str, Any]:
+        """识别仪表：先检测后读取"""
+        print(f"\n[DEBUG_ENTRY] read_instrument CALLED: path={image_path}, target={target_class_id}\n")
+        from PIL import Image
+        
+        # 1. 检测
+        detect_result = self.detect_only(image_path)
+        
+        if not detect_result.get("success"):
+            logger.warning("未检测到任何仪器目标，退回旧版全图识别流程...")
+            return self._read_by_identification(image_path)
+            
+        all_detections = detect_result["results"]
+        all_results = []
+        
+        # 2. 读取
+        for det_info in all_detections:
+            # 核心修正：如果指定了目标 ID，强制使用目标 ID（即使 YOLO 认错了类别，位置通常还是对的）
+            class_id = target_class_id if target_class_id is not None else det_info["class_id"]
+            
+            detected_camera_name = f"F{class_id}"
+            cropped_img_path = det_info["image_source"]
             
             # Use specific prompt for this camera
-            if detected_camera_name in DynamicInstrumentLibrary.INSTRUMENT_TEMPLATES:
-                result = self._read_by_camera(cropped_img, detected_camera_name)
+            template = DynamicInstrumentLibrary.get_template(str(class_id))
+            if template:
+                print(f"[DEBUG_CROP] Analyzing crop: {cropped_img_path}")
+                result = self._read_by_camera(str(cropped_img_path), detected_camera_name)
             else:
-                # Fallback if somehow class_id is out of bounds
-                result = {"success": False, "error": f"未知的相机类型: {detected_camera_name}"}
+                result = {"success": False, "error": f"未知的仪表类型 (ID:{class_id})"}
                 
-            result["bbox"] = [x1, y1, x2, y2]
-            result["yolo_confidence"] = yolo_conf
-            result["class_id"] = int(class_id)
-            result["cropped_image_path"] = relative_crop_path
+            # 合并检测信息 (保留原始 class_id 仅供调试)
+            result.update({
+                "bbox": det_info["bbox"],
+                "yolo_confidence": det_info["yolo_confidence"],
+                "class_id": class_id, 
+                "yolo_class_id": det_info["class_id"],
+                "cropped_image_path": det_info["cropped_image_path"]
+            })
+            
+            # --- 后处理：修复天平小数点丢失问题 ---
+            if "weight" in result.get("readings", {}):
+                val = result["readings"]["weight"]
+                if val is not None:
+                    try:
+                        f_val = float(val)
+                        # 如果读数很大（如 > 100）且没有小数部分，且原字符串不含 "."
+                        # 4033 -> 40.33
+                        if f_val > 100 and "." not in str(val):
+                            new_val = f_val / 100.0
+                            logger.info(f"天平读数纠偏: {val} -> {new_val}")
+                            result["readings"]["weight"] = new_val
+                    except: pass
+
             all_results.append(result)
             
-        # Return the first result for backwards compatibility, or a composite result
-        # To avoid breaking existing downstream systems that expect a single dict:
-        # If there's only 1 target, return it directly. 
-        # If multiple, wrap them in a special dict.
+        # 3. 结果筛选
+        if target_class_id is not None:
+            # 优先寻找完全匹配的
+            matches = [r for r in all_results if r.get("class_id") == target_class_id]
+            if matches:
+                return matches[0]
+            # 否则返回第一个结果
+        
         if len(all_results) == 1:
             return all_results[0]
         else:
+            # 汇总平铺 readings 以便于简单提取
+            combined_readings = {}
+            for r in all_results:
+                combined_readings.update(r.get("readings", {}))
+                
             return {
                 "success": True,
                 "multiple_targets": True,
                 "instrument_name": "Multiple Instruments",
-                "readings": {f"target_{i}": res.get("readings", {}) for i, res in enumerate(all_results)},
+                "readings": combined_readings, # 平铺
+                "detailed_readings": {f"target_{i}": res.get("readings", {}) for i, res in enumerate(all_results)},
                 "all_results": all_results,
                 "method": "yolo_multi_crop"
             }
@@ -665,14 +676,15 @@ class InstrumentReader:
             if camera_name == "F0" and "Validation failed" in parsed.get("error", ""):
                 logger.info("F0 auto模式校验失败，尝试以 manual 模式读取...")
                 instrument_type = "wuying_mixer_manual"
-                parsed = self.mm_reader.analyze_image(image_path, prompt, call_type="read", instrument_type=instrument_type)
+                parsed = self.mm_reader.analyze_image(image_source, prompt, call_type="read", instrument_type=instrument_type)
             
             if "error" in parsed:
                 return {"success": False, "error": f"数值读取失败: {parsed['error']}"}
 
         # 重新确定最终的仪器类型
         instrument_type = DynamicInstrumentLibrary.get_instrument_type_from_camera(camera_name, parsed)
-        instrument_name = DynamicInstrumentLibrary.CAMERA_INSTRUMENT_NAMES.get(camera_name, camera_name)
+        template = DynamicInstrumentLibrary.get_template(camera_name.replace('F', '').replace('f', ''))
+        instrument_name = template['name'] if template else camera_name
         readings = parsed  # 平铺JSON直接作为readings
 
         result = {
@@ -680,6 +692,7 @@ class InstrumentReader:
             "instrument_type": instrument_type,
             "instrument_name": instrument_name,
             "camera_name": camera_name,
+            "class_id": int(camera_name.replace('F', '').replace('f', '')),
             "type_confidence": 1.0,
             "readings": readings,
             "confidence": 0.9,
@@ -694,6 +707,11 @@ class InstrumentReader:
 
     def _get_ocr_text(self, image_path: str) -> Optional[str]:
         """调用 OCR 模型提取图片文字"""
+        # 如果使用的是本地 VLM，通常不需要单独的 OCR 步骤，或者 8080 服务本就不存在
+        if Config.DEFAULT_LLM_PROVIDER == "local_vlm":
+            logger.debug("使用 local_vlm，跳过 8080 OCR 步骤")
+            return None
+
         try:
             import httpx
             from PIL import Image
@@ -714,6 +732,8 @@ class InstrumentReader:
             buf = _io.BytesIO()
             img.save(buf, format="JPEG", quality=95)
             img_b64 = base64.b64encode(buf.getvalue()).decode()
+            
+            logger.info("尝试调用 8080 OCR 服务...")
             r = httpx.post(
                 f"{Config.LMSTUDIO_BASE_URL}/v1/chat/completions",
                 json={
@@ -725,12 +745,12 @@ class InstrumentReader:
                     "max_tokens": 500,
                     "temperature": 0.0,
                 },
-                timeout=60,
+                timeout=5, # 缩短超时时间，避免挂死
             )
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"]
         except Exception as e:
-            logger.warning("OCR提取失败: %s", e)
+            logger.warning("OCR提取失败（服务可能未启动）: %s", e)
             return None
 
     def _read_by_identification(self, image_path: str) -> Dict[str, Any]:
