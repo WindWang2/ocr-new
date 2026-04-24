@@ -61,7 +61,21 @@ export default function ManualInstrumentSlot({
         undefined, slotIndex, false, undefined, instrumentId
       )
       
-      if (!ocrResult.success) setError(ocrResult.detail || '识别失败')
+      if (!ocrResult.success) {
+        setError(ocrResult.detail || '识别失败')
+      } else {
+        // Force update local fieldValues from the successful OCR result
+        if (ocrResult.all_ocr && Object.keys(ocrResult.all_ocr).length > 0) {
+          const newVals: Record<string, string> = {}
+          Object.entries(ocrResult.all_ocr).forEach(([k, v]) => {
+            newVals[k] = String(v)
+          })
+          setFieldValues(newVals)
+          console.log('[UI_SYNC] ManualSlot updated from all_ocr:', newVals)
+        } else if (ocrResult.readings && ocrResult.readings.length > 0 && instrumentFields?.length) {
+          setFieldValues({ [instrumentFields[0].key]: String(ocrResult.readings[0].value) })
+        }
+      }
       await onComplete()
     } catch (e: any) {
       setError(e.message || '采集失败')
@@ -114,7 +128,7 @@ export default function ManualInstrumentSlot({
       >
         {(displayImage || previewImage) ? (
           <img 
-            src={`/images/${previewImage || displayImage}`} 
+            src={`http://localhost:8001/images/${previewImage || displayImage}`} 
             className={`w-full h-full object-cover transition-all duration-500 ${phase !== 'idle' ? 'opacity-30 blur-sm scale-110' : 'opacity-80 hover:opacity-100'}`} 
             alt="Capture" 
           />
@@ -159,32 +173,15 @@ export default function ManualInstrumentSlot({
           </p>
         </div>
 
-        <div className="space-y-2 flex-1">
-          {instrumentFields && instrumentFields.length > 0 ? (
-            instrumentFields.map((f) => (
-              <div key={f.key} className="flex items-center">
-                <div className="flex-1 flex items-center bg-white border border-[var(--border)] rounded px-1.5 py-1 focus-within:border-[var(--text-secondary)] transition-colors">
-                  <label className="text-[9px] font-bold text-[var(--text-secondary)] w-[76px] shrink-0 whitespace-nowrap leading-none">
-                    {f.label}
-                  </label>
-                  <input
-                    type="text"
-                    value={fieldValues[f.key] || ''}
-                    onChange={(e) => handleFieldChange(f.key, e.target.value)}
-                    onBlur={handleFieldBlur}
-                    placeholder="NULL"
-                    className="flex-1 bg-transparent border-none text-[11px] font-mono-num font-bold text-[var(--text-primary)] focus:ring-0 p-0 text-right min-w-0"
-                  />
-                  {f.unit && (
-                    <span className="text-[9px] font-bold text-[var(--text-muted)] ml-1 shrink-0">{f.unit}</span>
-                  )}
-                </div>
-              </div>
-            ))
+        <div className="space-y-2 flex-1 overflow-auto">
+          {Object.keys(fieldValues).length > 0 ? (
+            <pre className="text-[10px] font-mono-num text-[var(--text-secondary)] bg-white border border-[var(--border)] rounded p-2 overflow-x-auto">
+              {JSON.stringify(fieldValues, null, 2)}
+            </pre>
           ) : (
             <div className="h-20 flex flex-col items-center justify-center border border-dashed border-[var(--border)] rounded bg-white">
               <Hash size={16} className="text-zinc-200 mb-1" />
-              <span className="text-[9px] font-bold text-zinc-300 uppercase">Load Templates</span>
+              <span className="text-[9px] font-bold text-zinc-300 uppercase">Awaiting Data</span>
             </div>
           )}
         </div>

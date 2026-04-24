@@ -26,10 +26,10 @@ class YOLOInstrumentDetector:
         self.iou_threshold = iou_threshold
         self.agnostic_nms = agnostic_nms
         
-        # 强制定位到项目根目录下的 models 文件夹
+        # 强制定位到上级目录下的 last.pt
         from pathlib import Path
         project_root = Path(__file__).parent.parent.parent
-        self.model_path = model_path or r"C:\Users\wangj.KEVIN\projects\last.pt"
+        self.model_path = model_path or str(project_root.parent / "last.pt")
         
         if not os.path.exists(self.model_path):
             logger.warning(f"指定模型未找到: {self.model_path}, 尝试备选路径...")
@@ -63,6 +63,9 @@ class YOLOInstrumentDetector:
         results = self.model.predict(image, verbose=False, conf=self.confidence_threshold)[0]
         detections = []
         
+        img_w, img_h = image.size
+        img_area = img_w * img_h
+
         if len(results.boxes) > 0:
             boxes = results.boxes.xyxy
             scores = results.boxes.conf
@@ -82,6 +85,35 @@ class YOLOInstrumentDetector:
                 x1, y1, x2, y2 = map(float, box)
                 confidence = float(score)
                 class_id = int(label)
+                
+                # --- 智能筛选逻辑 ---
+                w = x2 - x1
+                h = y2 - y1
+                area = w * h
+                area_ratio = area / img_area
+                aspect_ratio = w / h if h > 0 else 0
+                
+                # 1. 面积过滤：
+                # 如果框占了全图 70% 以上且置信度不高，通常是误检的大底座
+                if area_ratio > 0.7 and confidence < 0.6:
+                    logger.warning(f"跳过过大的疑似背景框: Class {class_id}, Area {area_ratio:.2%}")
+                    continue
+                
+                # 特殊针对 F7: 如果面积占比太小（小于 1%），在 F7 这种大仪表上很可能是误检
+                if class_id == 7 and area_ratio < 0.01:
+                    logger.warning(f"跳过过小的 F7 误检框: Area {area_ratio:.2%}")
+                    continue
+
+                # 2. 极端长宽比过滤：普通仪表通常比例在 0.2 ~ 6.0 之间
+                if aspect_ratio > 10.0 or aspect_ratio < 0.1:
+                    logger.warning(f"跳过长宽比畸形的框: Class {class_id}, Ratio {aspect_ratio:.2f}")
+                    continue
+
+                # 3. 极小噪声过滤
+                if area < 400:
+                    continue
+
+                # 存储时附带一个几何评分 (用于后期筛选)
                 detections.append([x1, y1, x2, y2, confidence, class_id])
                 
         detections.sort(key=lambda x: x[4], reverse=True)

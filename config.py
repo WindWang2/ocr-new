@@ -28,7 +28,7 @@ class Config:
     LMSTUDIO_OCR_MODEL = _env("LMSTUDIO_OCR_MODEL", "2b-new")
     
     # 本地 VLM 配置 (Transformers)
-    LOCAL_VLM_PATH = _env("LOCAL_VLM_PATH", r"C:\Users\wangj.KEVIN\projects\GLM-OCR")
+    LOCAL_VLM_PATH = _env("LOCAL_VLM_PATH", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "GLM-OCR")))
     DEFAULT_LLM_PROVIDER = _env("DEFAULT_LLM_PROVIDER", "local_vlm")
 
     # 模型推理参数

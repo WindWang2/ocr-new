@@ -36,78 +36,71 @@ def get_pydantic_model_for_instrument(instrument_type: str):
     DynamicModel = create_model(f'{instrument_type}Model', **model_fields)
     return DynamicModel
 
+from backend.instrument_configs import INSTRUMENT_CONFIGS
+
 class DynamicInstrumentLibrary:
-    # 默认值 (F0-F8 -> 物理相机 ID)
-    _DEFAULT_ROUTE = {
-        0: 0, 1: 3, 2: 3, 3: 3, 4: 5, 5: 5, 6: 7, 7: 7, 8: 8
-    }
+    """动态仪器配置库：以中央配置文件为准，支持数据库动态覆盖"""
 
     @classmethod
     def get_route_map(cls) -> Dict[int, int]:
         """获取仪器到物理相机的路由映射"""
+        # 1. 默认从配置文件加载
+        route_map = {cfg["yolo_cls_id"]: cfg["camera_id"] for cfg in INSTRUMENT_CONFIGS.values()}
+        
+        # 2. 尝试从数据库覆盖 (用户在前端修改的结果)
         try:
             from backend.models.database import get_config
-            # 数据库存储格式为字符串键 {"0": 0, "1": 3, ...}
             saved = get_config("instrument_camera_mapping", default=None)
             if saved:
-                # 转换回整数键
-                return {int(k): int(v) for k, v in saved.items()}
+                for k, v in saved.items():
+                    route_map[int(k)] = int(v)
         except Exception as e:
-            logger.warning(f"Failed to load dynamic route map: {e}")
-        
-        return cls._DEFAULT_ROUTE
+            logger.warning(f"无法加载动态路由覆盖: {e}")
+            
+        return route_map
 
     @classmethod
     def get_physical_camera_id(cls, instrument_id: int) -> int:
         """根据仪器 ID 获取对应的物理相机 ID"""
         route = cls.get_route_map()
-        res = route.get(instrument_id, instrument_id)
-        print(f"\n[ROUTE_DEBUG] instrument_id={instrument_id} -> physical_camera_id={res} (Map: {route})\n")
-        return res
+        return route.get(instrument_id, instrument_id)
 
     @classmethod
-    def get_template(cls, instrument_type):
-        # 兼容处理：将 F1, F2 等转换为数据库中的 1, 2
-        lookup_type = str(instrument_type)
-        if lookup_type.startswith('F'):
-            lookup_type = lookup_type[1:]
-            
-        t = get_template(lookup_type)
-        if t:
-            t['fields'] = json.loads(t['fields_json'])
-            t['keywords'] = json.loads(t['keywords_json'])
-            t['example_images'] = json.loads(t['example_images_json'] or '[]')
-        return t
+    def get_template(cls, instrument_key: str) -> Optional[Dict[str, Any]]:
+        """获取仪器的识别模板（优先从数据库获取，否则回退到配置文件）"""
+        # 1. 尝试作为 ID (0-8) 从数据库获取
+        inst_type_id = str(instrument_key).replace('F', '').replace('f', '')
+        try:
+            from backend.models.database import get_template
+            t = get_template(inst_type_id)
+            if t:
+                # 转换数据库中的 JSON 字符串
+                if isinstance(t, dict):
+                    t['fields'] = json.loads(t.get('fields_json', '[]'))
+                    t['keywords'] = json.loads(t.get('keywords_json', '[]'))
+                    t['example_images'] = json.loads(t.get('example_images_json') or '[]')
+                    return t
+        except Exception as e:
+            logger.warning(f"从数据库获取模板失败: {e}")
 
-    @classmethod
-    def get_all(cls):
-        templates = get_all_templates()
-        for t in templates:
-            t['fields'] = json.loads(t['fields_json'])
-            t['keywords'] = json.loads(t['keywords_json'])
-            t['example_images'] = json.loads(t['example_images_json'] or '[]')
-        return templates
-
-    @classmethod
-    def identify_by_ocr_keywords(cls, ocr_text: str) -> str:
-        templates = cls.get_all()
-        for t in templates:
-            if all(kw in ocr_text for kw in t['keywords']):
-                return t['instrument_type']
-        return "unknown"
-
-    @classmethod
-    def get_instrument_prompt(cls, instrument_type: str) -> str:
-        t = cls.get_template(instrument_type)
-        if t:
-            return t['prompt_template']
-        return ""
+        # 2. 回退到 INSTRUMENT_CONFIGS 静态配置
+        f_key = f"F{inst_type_id}"
+        config = INSTRUMENT_CONFIGS.get(f_key)
+        if config:
+            # 转换为统一的字典格式供下游使用
+            return {
+                'instrument_type': f_key,
+                'name': config.get('name'),
+                'prompt_template': config.get('prompt'),
+                'fields': [], # 静态配置暂无详细字段定义
+                'post_process': config.get('post_process')
+            }
+        return None
 
     @classmethod
     def get_camera_prompt(cls, camera_name_or_id: str) -> str:
-        """根据相机代号（如 F3）或仪器 ID 获取对应的 Prompt（动态从数据库获取）"""
-        inst_type_id = str(camera_name_or_id).replace('F', '').replace('f', '')
-        t = cls.get_template(inst_type_id)
+        """根据相机代号（如 F3）或仪器 ID 获取对应的 Prompt"""
+        t = cls.get_template(camera_name_or_id)
         if t:
             return t.get('prompt_template', "")
         return ""
@@ -134,6 +127,30 @@ class DynamicInstrumentLibrary:
         except Exception:
             pass
         return "未知仪器"
+
+    @classmethod
+    def get_post_process_type(cls, instrument_id: int) -> Optional[str]:
+        """获取仪器的后处理逻辑类型"""
+        t = cls.get_template(str(instrument_id))
+        if t:
+            return t.get('post_process')
+        return None
+
+    @classmethod
+    def get_all(cls):
+        """获取所有仪器模板（用于识别）"""
+        try:
+            from backend.models.database import get_all_templates
+            templates = get_all_templates()
+            for t in templates:
+                if isinstance(t, dict):
+                    t['fields'] = json.loads(t.get('fields_json', '[]'))
+                    t['keywords'] = json.loads(t.get('keywords_json', '[]'))
+                    t['example_images'] = json.loads(t.get('example_images_json') or '[]')
+            return templates
+        except Exception as e:
+            logger.warning(f"获取所有模板失败: {e}")
+            return []
 
     @classmethod
     def identify_instrument_prompt(cls) -> str:
@@ -217,6 +234,16 @@ class MultimodalModelReader:
             else:
                 img = image_source.convert("RGB")
                 image_path_str = "memory_image"
+            
+            # 统一执行缩放逻辑：送入 LLM 的图片最长边不超过 500 像素
+            if Config.IMAGE_RESIZE_ENABLED:
+                w, h = img.size
+                max_dim = max(w, h)
+                if max_dim > Config.IMAGE_MAX_SIZE:
+                    scale = Config.IMAGE_MAX_SIZE / max_dim
+                    new_w, new_h = int(w * scale), int(h * scale)
+                    img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                    logger.info(f"LLM 输入图已强制缩放: {w}x{h} -> {new_w}x{new_h}")
                 
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=95)
@@ -258,21 +285,35 @@ class MultimodalModelReader:
                 temperature=Config.MODEL_TEMPERATURE,
                 max_tokens=Config.MODEL_MAX_TOKENS,
             )
-            logger.debug("模型原始响应: %s", result_text[:500] if len(result_text) > 500 else result_text)
-
+            
+            # 强化调试日志：清理掉那些烦人的 <|image|>
+            clean_log = re.sub(r'<\|image\|>', '', result_text).strip()
+            print(f"\n[DEBUG RAW LLM] (Cleaned) >>>\n{clean_log}\n<<< [DEBUG RAW LLM]\n")
+            
             parsed = self._parse_json_response(result_text)
             
-            # 若提供了仪器类型，且解析成功（或包含非严重错误），尝试进行 Pydantic 校验
+            # 【核心修正】不再使用 Pydantic 进行严格过滤，仅在结果缺失时填充 null
             if instrument_type and "error" not in parsed:
-                parsed = self._validate_with_pydantic(parsed, instrument_type)
+                template = DynamicInstrumentLibrary.get_template(instrument_type)
+                if template:
+                    for field in template.get('fields', []):
+                        f_name = field['name']
+                        if f_name not in parsed:
+                            parsed[f_name] = None
+                        # 不再强制转为 float，保留原始字符串供后处理引擎检查格式（如小数点缺失）
             
             if "error" in parsed:
-                logger.warning("分析失败或解析错误，原始响应: %s", result_text)
+                logger.warning("分析失败或解析错误，原始响应: %s", clean_log)
 
             # 保存响应到JSON文件（调试用）
             self._save_response_debug(image_path_str, call_type, prompt, result_text, parsed)
 
             return parsed
+        except Exception as e:
+            logger.error("多模态模型分析失败: %s", e)
+            import traceback
+            traceback.print_exc()
+            return {"error": str(e)}
         except Exception as e:
             logger.error("多模态模型分析失败: %s", e)
             import traceback
@@ -301,11 +342,17 @@ class MultimodalModelReader:
         # Remove ellipses
         text = re.sub(r',\s*\.\.\.\s*', '', text)
         text = re.sub(r'\.\.\.', '', text)
+        
+        # Auto-fix common LLM JSON mistake: missing quotes on keys
+        # E.g., {weight": "4033"} -> {"weight": "4033"}
+        # Or {weight: 4033} -> {"weight": 4033}
+        fixed_text = re.sub(r'([{,]\s*)["\']?([a-zA-Z_][a-zA-Z0-9_]*)["\']?\s*:', r'\1"\2":', text)
 
         # Try to extract JSON from Markdown code blocks
-        code_block_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', text)
+        code_block_match = list(re.finditer(r'```(?:json)?\s*([\s\S]*?)```', fixed_text))
         if code_block_match:
-            json_text = code_block_match.group(1).strip()
+            # 取最后一个代码块，因为前面的可能是 prompt 中的示例
+            json_text = code_block_match[-1].group(1).strip()
             try:
                 return json.loads(json_text)
             except json.JSONDecodeError:
@@ -313,62 +360,50 @@ class MultimodalModelReader:
 
         try:
             # 先尝试直接解析整个文本
-            return json.loads(text)
+            return json.loads(fixed_text)
         except (json.JSONDecodeError, ValueError):
             pass
 
         try:
-            # 提取最外层的 JSON 对象（支持嵌套大括号）
-            # 针对 2b 模型经常爱输出推理文字的情况，如果我们找不到 {，尝试寻找 JSON 常见的起始标志
-            start = text.find('{')
-            if start == -1:
-                # 尝试修复：如果模型输出了 "JSON: {" 或类似内容
-                match = re.search(r'\{', text)
-                if match:
-                    start = match.start()
-                else:
-                    logger.warning("响应中未找到JSON对象: %s", text[:200])
-                    return {"error": "响应中未找到JSON对象", "raw_text": text}
+            # 暴力提取所有可能的 JSON 块，选最后一个（最可能是模型真实的输出）
+            # 找所有 {
+            start_indices = [i for i, char in enumerate(fixed_text) if char == '{']
+            valid_jsons = []
+            
+            for start in start_indices:
+                depth = 0
+                for i in range(start, len(fixed_text)):
+                    if fixed_text[i] == '{':
+                        depth += 1
+                    elif fixed_text[i] == '}':
+                        depth -= 1
+                        if depth == 0:
+                            json_str = fixed_text[start:i + 1]
+                            try:
+                                parsed = json.loads(json_str)
+                                valid_jsons.append(parsed)
+                            except json.JSONDecodeError:
+                                pass
+                            break # 找到当前 { 对应的闭合 } 后跳出内层循环
+            
+            if valid_jsons:
+                return valid_jsons[-1] # 返回最后一个合法的 JSON
+            
+            # 【终极兜底】：如果连 { } 都坏了，直接用正则暴力提取数字（仅作为最后一招）
+            logger.warning("未能在文本中找到合法的 JSON 对象，尝试正则降级提取: %s", text[:200])
+            fallback_dict = {}
+            # 找所有 键: 值
+            matches = re.finditer(r'["\']?([a-zA-Z_][a-zA-Z0-9_]*)["\']?\s*:\s*["\']?([\d\.]+)["\']?', fixed_text)
+            for m in matches:
+                key, val = m.groups()
+                try:
+                    fallback_dict[key] = float(val)
+                except ValueError: pass
+            
+            if fallback_dict:
+                return fallback_dict
 
-            depth = 0
-            # 优先从后往前找最后一个完整的JSON对象
-            for i in range(len(text) - 1, start - 1, -1):
-                if text[i] == '}':
-                    # 从start到i检查是否是完整JSON
-                    json_str = text[start:i + 1]
-                    # 验证大括号匹配
-                    depth_check = 0
-                    valid = True
-                    for c in json_str:
-                        if c == '{':
-                            depth_check += 1
-                        elif c == '}':
-                            depth_check -= 1
-                            if depth_check < 0:
-                                valid = False
-                                break
-                    if valid and depth_check == 0:
-                        try:
-                            return json.loads(json_str)
-                        except json.JSONDecodeError:
-                            pass
-
-            # 如果上面失败，使用原来的方法
-            depth = 0
-            for i in range(start, len(text)):
-                if text[i] == '{':
-                    depth += 1
-                elif text[i] == '}':
-                    depth -= 1
-                    if depth == 0:
-                        json_str = text[start:i + 1]
-                        try:
-                            return json.loads(json_str)
-                        except json.JSONDecodeError as e:
-                            logger.warning("JSON解析错误: %s, JSON内容: %s", e, json_str[:200])
-                            return {"error": f"JSON解析错误: {e}", "raw_text": text}
-            logger.warning("JSON对象未正确闭合: %s", text[:200])
-            return {"error": "JSON对象未正确闭合", "raw_text": text}
+            return {"error": "未能在文本中找到合法的 JSON 对象", "raw_text": text}
         except Exception as e:
             logger.error("解析响应时发生异常: %s", e)
             return {"error": str(e), "raw_text": text}
@@ -496,6 +531,31 @@ class InstrumentReader:
         from PIL import Image
         from pathlib import Path
 
+        # 核心逻辑：防止对已经是裁剪图的图片进行二次裁剪
+        path_obj = Path(image_path)
+        if "crops" in path_obj.parts or "_crop_" in path_obj.name:
+            logger.info("输入图片已是裁剪图，跳过二次裁剪逻辑")
+            # 尝试计算相对于挂载根目录的路径
+            try:
+                parts = list(path_obj.parts)
+                start_idx = 0
+                for i in range(len(parts)-1, -1, -1):
+                    if re.match(r'^[Ff]\d+$', parts[i]):
+                        start_idx = i
+                        break
+                rel_path = "/".join(parts[start_idx:])
+            except:
+                rel_path = path_obj.name
+                
+            return {"success": True, "results": [{
+                "success": True,
+                "bbox": [0,0,0,0],
+                "yolo_confidence": 1.0,
+                "class_id": int(re.search(r'F(\d+)', path_obj.name).group(1)) if "F" in path_obj.name else 0,
+                "cropped_image_path": rel_path.replace("\\", "/"),
+                "image_source": image_path
+            }]}
+
         # 懒加载 YOLO
         if not hasattr(self, 'yolo_detector'):
             print("[DEBUG_DETECT] Initializing YOLO...")
@@ -521,144 +581,125 @@ class InstrumentReader:
             detected_camera_name = f"F{int(class_id)}"
             
             # Crop image (from original high-res img)
-            cropped_img = self.yolo_detector.crop_instrument(img, det, padding=15)
+            cropped_img_high_res = self.yolo_detector.crop_instrument(img, det, padding=15)
             
-            # Resize crop precisely for LLM (max side 500px)
-            if Config.IMAGE_RESIZE_ENABLED:
-                w, h = cropped_img.size
-                max_dim = max(w, h)
-                if max_dim > Config.IMAGE_MAX_SIZE:
-                    scale = Config.IMAGE_MAX_SIZE / max_dim
-                    new_w, new_h = int(w * scale), int(h * scale)
-                    cropped_img = cropped_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-                    logger.info(f"Crop resized: {w}x{h} -> {new_w}x{new_h}")
-            
-            # Save cropped image
+            # Save high-res cropped image first
             orig_path = Path(image_path)
             crops_dir = orig_path.parent / "crops"
             crops_dir.mkdir(parents=True, exist_ok=True)
             
             timestamp = __import__("time").strftime("%H%M%S")
-            crop_filename = f"{orig_path.stem}_crop_{detected_camera_name}_{timestamp}.jpg"
+            # 统一使用 .png 保持高清无损
+            crop_filename = f"{orig_path.stem}_crop_{detected_camera_name}_{timestamp}.png"
             crop_path = crops_dir / crop_filename
-            cropped_img.save(crop_path, "JPEG", quality=90)
+            cropped_img_high_res.save(crop_path, "PNG", optimize=False)
             
-            # Relative path for frontend
-            # Robust relative path calculation:
-            # 1. Try to find the camera folder (F0, F1...) as the root
-            # 2. Try to find 'camera_images' as the root
-            # 3. Fallback to a simpler relative path
-            relative_crop_path = None
+            # 计算相对于挂载根目录的干净路径
             try:
-                parts = crop_path.parts
-                # Search from the end for the first 'F{digit}' folder
-                for i in range(len(parts) - 1, -1, -1):
-                    if re.match(r'^F\d+$', parts[i]):
-                        relative_crop_path = "/".join(parts[i:])
+                parts = list(crop_path.parts)
+                start_idx = 0
+                for i in range(len(parts)-1, -1, -1):
+                    if re.match(r'^[Ff]\d+$', parts[i]):
+                        start_idx = i
                         break
-                
-                if not relative_crop_path:
-                    if "camera_images" in parts:
-                        ci_idx = parts.index("camera_images")
-                        relative_crop_path = "/".join(parts[ci_idx+1:])
-                    else:
-                        # Fallback: F{class_id}/crops/filename
-                        relative_crop_path = f"{detected_camera_name}/crops/{crop_filename}"
-            except Exception:
-                relative_crop_path = f"crops/{crop_filename}"
+                relative_crop_path = "/".join(parts[start_idx:])
+            except:
+                relative_crop_path = f"{detected_camera_name}/crops/{crop_filename}"
                 
             all_results.append({
                 "success": True,
-                "bbox": [float(x1), float(y1), float(x2), float(y2)], # Ensure JSON serializable
+                "bbox": [float(x1), float(y1), float(x2), float(y2)],
                 "yolo_confidence": float(yolo_conf),
                 "class_id": int(class_id),
-                "cropped_image_path": relative_crop_path.replace("\\", "/"), # Cross-platform
+                "cropped_image_path": str(relative_crop_path).replace("\\", "/"),
                 "image_source": crop_path 
             })
+            
+        return {"success": True, "results": all_results}
             
         return {"success": True, "results": all_results}
 
     def read_instrument(self, image_path: str, target_class_id: int = None) -> Dict[str, Any]:
         """识别仪表：先检测后读取"""
         print(f"\n[DEBUG_ENTRY] read_instrument CALLED: path={image_path}, target={target_class_id}\n")
-        from PIL import Image
         
-        # 1. 检测
-        detect_result = self.detect_only(image_path)
-        
-        if not detect_result.get("success"):
-            logger.warning("未检测到任何仪器目标，退回旧版全图识别流程...")
-            return self._read_by_identification(image_path)
-            
-        all_detections = detect_result["results"]
-        all_results = []
-        
-        # 2. 读取
-        for det_info in all_detections:
-            # 核心修正：如果指定了目标 ID，强制使用目标 ID（即使 YOLO 认错了类别，位置通常还是对的）
-            class_id = target_class_id if target_class_id is not None else det_info["class_id"]
-            
-            detected_camera_name = f"F{class_id}"
-            cropped_img_path = det_info["image_source"]
-            
-            # Use specific prompt for this camera
-            template = DynamicInstrumentLibrary.get_template(str(class_id))
-            if template:
-                print(f"[DEBUG_CROP] Analyzing crop: {cropped_img_path}")
-                result = self._read_by_camera(str(cropped_img_path), detected_camera_name)
-            else:
-                result = {"success": False, "error": f"未知的仪表类型 (ID:{class_id})"}
-                
-            # 合并检测信息 (保留原始 class_id 仅供调试)
-            result.update({
-                "bbox": det_info["bbox"],
-                "yolo_confidence": det_info["yolo_confidence"],
-                "class_id": class_id, 
-                "yolo_class_id": det_info["class_id"],
-                "cropped_image_path": det_info["cropped_image_path"]
-            })
-            
-            # --- 后处理：修复天平小数点丢失问题 ---
-            if "weight" in result.get("readings", {}):
-                val = result["readings"]["weight"]
-                if val is not None:
-                    try:
-                        f_val = float(val)
-                        # 如果读数很大（如 > 100）且没有小数部分，且原字符串不含 "."
-                        # 4033 -> 40.33
-                        if f_val > 100 and "." not in str(val):
-                            new_val = f_val / 100.0
-                            logger.info(f"天平读数纠偏: {val} -> {new_val}")
-                            result["readings"]["weight"] = new_val
-                    except: pass
-
-            all_results.append(result)
-            
-        # 3. 结果筛选
+        # 1. 动态调整检测阈值：如果指定了目标，临时降到 0.05 以捕获弱特征目标 (如 F7)
+        original_conf = self.yolo_detector.confidence_threshold
         if target_class_id is not None:
-            # 优先寻找完全匹配的
-            matches = [r for r in all_results if r.get("class_id") == target_class_id]
-            if matches:
-                return matches[0]
-            # 否则返回第一个结果
+            self.yolo_detector.confidence_threshold = 0.05
+            
+        detect_result = self.detect_only(image_path)
+        self.yolo_detector.confidence_threshold = original_conf # 立即恢复原阈值
         
-        if len(all_results) == 1:
-            return all_results[0]
-        else:
-            # 汇总平铺 readings 以便于简单提取
-            combined_readings = {}
-            for r in all_results:
-                combined_readings.update(r.get("readings", {}))
+        # 2. 如果检测到了内容
+        if detect_result.get("success") and detect_result.get("results"):
+            all_detections = detect_result["results"]
+            
+            if target_class_id is not None:
+                # 策略：只要用户指定了目标，就只在检出的框里找这个目标
+                target_matches = [d for d in all_detections if d["class_id"] == target_class_id]
                 
-            return {
-                "success": True,
-                "multiple_targets": True,
-                "instrument_name": "Multiple Instruments",
-                "readings": combined_readings, # 平铺
-                "detailed_readings": {f"target_{i}": res.get("readings", {}) for i, res in enumerate(all_results)},
-                "all_results": all_results,
-                "method": "yolo_multi_crop"
-            }
+                if target_matches:
+                    best_det = max(target_matches, key=lambda x: x["yolo_confidence"])
+                    logger.info(f"YOLO 成功(通过降低阈值)捕获目标 F{target_class_id}，执行特写读取")
+                    return self._read_with_det_info(image_path, best_det, target_class_id)
+                else:
+                    # 如果降了阈值也没抓到 F7，但抓到了别的，也应该忽略别的，退回 F7 的全图读取
+                    logger.warning(f"调低阈值后仍未发现 F{target_class_id}，尝试对全图进行强行读取...")
+                    return self._read_by_camera(image_path, f"F{target_class_id}")
+            
+            # 如果没有指定目标，则执行普通多目标读取
+            all_results = []
+            for det_info in all_detections:
+                res = self._read_with_det_info(image_path, det_info)
+                all_results.append(res)
+                
+            if len(all_results) == 1: return all_results[0]
+            elif len(all_results) > 1:
+                combined_readings = {}
+                for r in all_results: combined_readings.update(r.get("readings", {}))
+                return {
+                    "success": True, "multiple_targets": True, "instrument_name": "Multiple Instruments",
+                    "readings": combined_readings, "all_results": all_results, "method": "yolo_multi_crop"
+                }
+
+        # 3. 核心逻辑修正：如果 YOLO 完全没检测到，但用户指定了 target_class_id，强行读取
+        if target_class_id is not None:
+            logger.warning(f"YOLO 完全未能检测到目标，强行对全图执行 F{target_class_id} 识别")
+            return self._read_by_camera(image_path, f"F{target_class_id}")
+            
+        logger.warning("未检测到任何仪器目标，退回旧版全图识别流程...")
+        return self._read_by_identification(image_path)
+
+    def _read_with_det_info(self, original_image_path: str, det_info: Dict, override_class_id: int = None) -> Dict:
+        """封装：根据检测信息执行单次读取"""
+        class_id = override_class_id if override_class_id is not None else det_info["class_id"]
+        detected_camera_name = f"F{class_id}"
+        cropped_img_path = det_info["image_source"]
+        
+        # 从中央配置获取 Prompt
+        prompt = DynamicInstrumentLibrary.get_template(str(class_id))
+        if prompt:
+            print(f"[DEBUG_CROP] Analyzing crop for F{class_id}: {cropped_img_path}")
+            result = self._read_by_camera(str(cropped_img_path), detected_camera_name)
+        else:
+            result = {"success": False, "error": f"未找到 F{class_id} 的配置"}
+            
+        # 合并检测信息
+        result.update({
+            "bbox": det_info["bbox"],
+            "yolo_confidence": det_info["yolo_confidence"],
+            "class_id": class_id, 
+            "yolo_class_id": det_info["class_id"],
+            "cropped_image_path": det_info["cropped_image_path"]
+        })
+        
+        # 动态执行强大的后处理引擎 (如天平的小数点纠正、时间转换)
+        from backend.services.post_processor import apply_post_processing
+        if "readings" in result:
+            result["readings"] = apply_post_processing(class_id, result["readings"])
+            
+        return result
 
     def _read_by_camera(self, image_source: Union[str, Image.Image], camera_name: str) -> Dict[str, Any]:
         """使用相机专用prompt直接读取（单步，跳过识别）"""
@@ -686,13 +727,18 @@ class InstrumentReader:
         template = DynamicInstrumentLibrary.get_template(camera_name.replace('F', '').replace('f', ''))
         instrument_name = template['name'] if template else camera_name
         readings = parsed  # 平铺JSON直接作为readings
+        class_id = int(camera_name.replace('F', '').replace('f', ''))
+
+        # 动态执行强大的后处理引擎
+        from backend.services.post_processor import apply_post_processing
+        readings = apply_post_processing(class_id, readings)
 
         result = {
             "success": True,
             "instrument_type": instrument_type,
             "instrument_name": instrument_name,
             "camera_name": camera_name,
-            "class_id": int(camera_name.replace('F', '').replace('f', '')),
+            "class_id": class_id,
             "type_confidence": 1.0,
             "readings": readings,
             "confidence": 0.9,

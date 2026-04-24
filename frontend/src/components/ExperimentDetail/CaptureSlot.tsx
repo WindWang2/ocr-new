@@ -76,6 +76,14 @@ export default function CaptureSlot({
         setError(result.detail || '识别失败')
       } else {
         if (result.detail) setWarn(result.detail)
+        
+        // 【关键修复】识别成功后，直接从返回结果中提取主值并强制更新本地 Input 状态
+        if (result.readings && result.readings.length > 0) {
+          const newVal = result.readings[0].value;
+          setInputVal(String(newVal));
+          console.log(`[UI_SYNC] OCR Success, forcing input update: ${newVal}`);
+        }
+        
         await onComplete()
       }
     } catch (e: unknown) {
@@ -179,7 +187,7 @@ export default function CaptureSlot({
       <div className="flex flex-col border border-gray-100 rounded-xl overflow-hidden bg-white">
         <div className="relative bg-gray-50 h-28">
           {displayImage ? (
-            <img src={`/images/${displayImage}`} alt={label} className="w-full h-full object-cover" />
+            <img src={`http://localhost:8001/images/${displayImage}`} alt={label} className="w-full h-full object-cover" />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
               <Camera size={20} className="text-gray-200" />
@@ -237,7 +245,7 @@ export default function CaptureSlot({
         <div className="flex flex-col gap-2 shrink-0">
           <div className="relative w-48 h-36 rounded-lg overflow-hidden bg-gray-50 border border-gray-100">
             {displayImage ? (
-              <img src={`/images/${displayImage}`} alt={label} className="w-full h-full object-cover" />
+              <img src={`http://localhost:8001/images/${displayImage}`} alt={label} className="w-full h-full object-cover" />
             ) : (
               <div className="w-full h-full flex items-center justify-center">
                 <Camera size={24} className="text-gray-200" />

@@ -6,6 +6,7 @@ import logging
 import time
 import torch
 import json
+import os
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Protocol, runtime_checkable
 from PIL import Image
@@ -145,11 +146,21 @@ class TransformersLocalVLMProvider:
     def _get_model_and_processor(cls, model_path: str):
         if cls._model is None or cls._processor is None:
             from transformers import AutoModelForImageTextToText, AutoProcessor
-            logger.info("正在从本地加载 VLM 模型: %s ...", model_path)
+            
+            # 确保 model_path 是绝对路径且指向本地目录
+            abs_model_path = os.path.abspath(model_path)
+            if not os.path.isdir(abs_model_path):
+                 logger.error(f"VLM 模型目录不存在: {abs_model_path}")
+                 # 如果不存在，尝试不转换，让 transformers 自己处理（可能是 repo id）
+                 target_path = model_path
+            else:
+                 target_path = abs_model_path
+
+            logger.info("正在从本地加载 VLM 模型: %s ...", target_path)
             start_time = time.time()
-            cls._processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+            cls._processor = AutoProcessor.from_pretrained(target_path, trust_remote_code=True)
             cls._model = AutoModelForImageTextToText.from_pretrained(
-                model_path,
+                target_path,
                 trust_remote_code=True,
                 torch_dtype=torch.float16,
                 device_map="auto"

@@ -46,7 +46,6 @@ from backend.services.camera_control import (
 )
 from backend.services.mock_camera import MockCameraClient
 from backend.services.task_manager import task_manager, TaskState
-from backend.services.llama_launcher import llama_launcher
 from backend.services.multi_instrument_pipeline import MultiInstrumentPipeline
 from config import Config
 
@@ -101,16 +100,50 @@ async def global_exception_handler(request: Request, exc: Exception):
         }
     )
 
-# 静态文件：挂载图片目录，供前端访问拍照图片
+# 静态文件：智能挂载图片目录
 # 优先从数据库读取，如果没有则使用 Config 默认值
 image_dir_path = get_config("image_dir") or Config.CAMERA_IMAGE_DIR
 _images_dir = Path(image_dir_path)
 if not _images_dir.is_absolute():
-    _images_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", _images_dir)))
+    # 尝试基于项目根目录定位
+    _images_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", image_dir_path)))
 
 _images_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/images", StaticFiles(directory=str(_images_dir)), name="images")
-logger.info(f"图片文件夹挂载完成: {_images_dir}")
+logger.info(f"图片映射根目录: {_images_dir}")
+
+from fastapi.responses import FileResponse
+
+@app.get("/images/{path:path}")
+async def serve_image(path: str):
+    """
+    智能提供图片文件服务：
+    1. 寻找原始文件。
+    2. 如果是 .jpg 但文件不存在，尝试寻找对应的 .png (针对新无损流程的平滑过渡)。
+    """
+    file_path = _images_dir / path
+    
+    # 1. 尝试原始路径
+    if file_path.exists() and file_path.is_file():
+        return FileResponse(str(file_path))
+    
+    # 2. .jpg -> .png 自动容错逻辑
+    if str(path).lower().endswith(".jpg"):
+        png_path = _images_dir / (str(path)[:-4] + ".png")
+        if png_path.exists():
+            return FileResponse(str(png_path))
+
+    # 3. 如果还是没有，尝试在 crops 目录下寻找
+    if "crops" not in str(path):
+        p = Path(path)
+        alt_path = _images_dir / p.parent / "crops" / p.name
+        # 同时也检查 crops 下的 .png
+        alt_path_png = _images_dir / p.parent / "crops" / (p.stem + ".png")
+        
+        if alt_path.exists(): return FileResponse(str(alt_path))
+        if alt_path_png.exists(): return FileResponse(str(alt_path_png))
+
+    raise HTTPException(status_code=404, detail=f"图片不存在: {path}")
+
 
 async def image_cleanup_task():
     """定期清理过期的图片文件，防止磁盘占满"""
@@ -136,12 +169,6 @@ async def startup_event():
         Config.update_image_dir(db_image_dir)
         logger.info(f"已同步数据库图片目录到 Config: {db_image_dir}")
 
-    # 自动启动本地 Llama Server (可选)
-    auto_start = os.getenv("AUTO_START_LLAMA", "true").lower() == "true"
-    if auto_start:
-        # 在后台线程启动以免阻塞 FastAPI 启动
-        asyncio.create_task(asyncio.to_thread(llama_launcher.start))
-    
     asyncio.create_task(image_cleanup_task())
     asyncio.create_task(_task_cleanup_loop())
 
@@ -154,25 +181,6 @@ async def _task_cleanup_loop():
         except Exception as e:
             logger.error(f"任务清理出错: {e}")
         await asyncio.sleep(300)  # 每5分钟清理一次
-
-
-# ==================== Llama 管理 API ====================
-
-@app.get("/llama/status")
-def get_llama_status():
-    """获取本地 Llama Server 运行状态"""
-    return {
-        "is_running": llama_launcher.is_running(),
-        "host": llama_launcher.host,
-        "port": llama_launcher.port
-    }
-
-@app.post("/llama/restart")
-def restart_llama():
-    """手动重启本地 Llama Server"""
-    llama_launcher.stop()
-    success = llama_launcher.start()
-    return {"success": success, "message": "Llama Server 已重新启动" if success else "启动失败"}
 
 
 # ==================== 异步任务查询 API ====================
@@ -758,58 +766,78 @@ def _core_run_test_capture(
         except Exception:
             readings_dict = {}
 
-    # 4. 白名单过滤
+    # 4. 白名单过滤与数值提取 (增强版：双向键名对齐)
+    from instrument_reader import DynamicInstrumentLibrary
+    template = DynamicInstrumentLibrary.get_template(str(target_instrument_id))
+    fields_map = {} # 英文键 -> 中文标签
+    reverse_fields_map = {} # 中文标签 -> 英文键
+    if template:
+        for f in template.get('fields', []):
+            fields_map[f['name']] = f['label']
+            reverse_fields_map[f['label']] = f['name']
+
     current_whitelist = WHITELIST.get(target_instrument_id, [])
     filtered_readings = {}
     numeric_ocr = {}
 
     for k, v in readings_dict.items():
-        if v is None:
-            continue
+        if v is None: continue
+        
+        # 兼容性修复：如果大模型按要求输出了中文键名，自动转为英文内部键
+        if k in reverse_fields_map:
+            k = reverse_fields_map[k]
+            
+        # 字段过滤 (使用英文键过滤)
         if target_instrument_id is not None and k not in current_whitelist:
             continue
 
+        # 存入原始值 (英文键)
         filtered_readings[k] = v
-        str_val = str(v).strip()
-
-        # 时间格式 "MM:SS" → 秒数
-        if k == "time" and ":" in str_val:
-            try:
-                parts = str_val.split(":")
-                numeric_ocr[k] = float(parts[0]) * 60 + float(parts[1])
-                continue
-            except Exception:
-                pass
-
-        clean_val = re.sub(r'[^\d\.\-]', '', str_val)
+        # 如果有对应的中文标签，映射一份到 filtered_readings 和 numeric_ocr (双向填充)
+        label = fields_map.get(k)
+        if label:
+            filtered_readings[label] = v
+        
+        # 智能提取数值用于计算主读数
         try:
-            if clean_val and clean_val != ".":
-                numeric_ocr[k] = float(clean_val)
-        except Exception:
-            pass
+            val = None
+            if isinstance(v, (int, float)):
+                val = float(v)
+            else:
+                str_val = str(v).strip()
+                if ":" in str_val and k == "time": # 时间转换
+                    parts = str_val.split(":")
+                    val = float(parts[0]) * 60 + float(parts[1])
+                else:
+                    clean_val = re.sub(r'[^\d\.\-]', '', str_val)
+                    if clean_val and clean_val != ".": val = float(clean_val)
+            
+            if val is not None:
+                numeric_ocr[k] = val
+                if label:
+                    numeric_ocr[label] = val # 核心：将中文标签也加入数值字典
+        except: pass
 
     # 5. 确定主值并保存
     primary_key = reading_key
     if not primary_key:
         config = next((c for c in experiment["camera_configs"] if c["field_key"] == field_key), None)
         selected = config.get("selected_readings", []) if config else []
+        # 在识别出的数字里找第一个被选中的字段 (支持中英文)
         primary_key = next((k for k in selected if k in numeric_ocr), None)
         
-        # 智能兜底：如果还是没确定主键，尝试从白名单和识别结果中自动选择
         if not primary_key:
-            if target_instrument_id == 1 or target_instrument_id == 2:
-                primary_key = 'weight'
-            elif len(current_whitelist) == 1:
-                primary_key = current_whitelist[0]
-            elif 'actual_reading' in numeric_ocr:
-                primary_key = 'actual_reading'
-            elif 'weight' in numeric_ocr:
-                primary_key = 'weight'
-            elif numeric_ocr:
-                # 最后的最后，选第一个识别到的数字
-                primary_key = list(numeric_ocr.keys())[0]
+            # 智能兜底
+            if target_instrument_id in (1, 2): primary_key = 'weight'
+            elif target_instrument_id == 3: primary_key = 'ph_value'
+            elif target_instrument_id == 5: primary_key = 'tension'
+            elif target_instrument_id == 8: primary_key = 'actual_reading'
+            elif numeric_ocr: primary_key = list(numeric_ocr.keys())[0]
 
     primary_value = numeric_ocr.get(primary_key, 0.0) if primary_key else 0.0
+    
+    logger.info(f"F{target_instrument_id} 识别结果汇总: {numeric_ocr}, 选定主值: {primary_key}={primary_value}")
+
     target_image_path = best_target.get("cropped_image_path", saved_image_path)
     final_run_index = run_index if run_index is not None else len(
         [r for r in experiment["readings"] if r["field_key"] == field_key]

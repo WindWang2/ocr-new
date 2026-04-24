@@ -1,0 +1,58 @@
+{
+  "F0": {
+    "name": "超级吴英混调度器",
+    "prompt": "这是超级吴英混调器控制屏幕。\n你需要判断是自动还是手动模式，并提取数值。\n\n【自动模式识别】：左侧菜单栏 \"自动模式\" 选项高亮时。\n提取：seg1_speed, seg1_time, seg2_speed, seg2_time, seg3_speed, seg3_time, total_time, remaining_time, current_segment, current_speed。\n\n【手动模式识别】：左侧菜单栏 \"手动模式\" 选项高亮时。\n屏幕中央有表格：\n- high_speed: \"高速\"行的转速\n- high_time: \"高速\"行的设置时间\n- low_speed: \"低速\"行的转速\n- low_time: \"低速\"行的时间\n- current_speed: 下方实时转速\n\n【重要】严格按以下格式输出 JSON：\n自动：{\"mode\": \"auto\", \"current_speed\": 0, \"remaining_time\": 0}\n手动：{\"mode\": \"manual\", \"high_speed\": 0, \"high_time\": 0, \"low_speed\": 0, \"low_time\": 0, \"current_speed\": 0}\n\n只输出 JSON，不要输出 Markdown 块或解释。"
+  },
+  "F1": {
+    "name": "电子天平1",
+    "prompt": "这是电子分析天平1号（SN: 53662），读取屏幕显示的重量数值。\n\n【重要】严格按以下JSON格式输出，不要输出任何其他内容：\n{\"weight\": 0.00}\n\n注意：\n1. 仔细辨认小数点位置（LED数码管上小数点非常细小，通常在最后两位数字之前）。\n2. 请务必确认小数点！如果看到 4033，请根据常识判断它应该是 40.33。\n3. 数值单位为g，只输出纯数字不含单位。"
+  },
+  "F2": {
+    "name": "电子天平2",
+    "prompt": "这是电子天枰2号（SN: 230199），读取屏幕显示的重量数值。\n\n【重要】严格按以下JSON格式输出，不要输出任何其他内容：\n{\"weight\": 0.00}\n\n注意：仔细辨认小数点位置（LED数码管上小数点很小），数值单位为g，只输出纯数字不含单位。"
+  },
+  "F3": {
+    "name": "PH仪",
+    "prompt": "这是 PH 计（酸度计）的液晶屏幕。\n请读取屏幕上最大的三个数字：\n1. ph_value: 屏幕中间最大的数字，通常带 2 位或 3 位小数（如 7.01 或 4.005）。\n2. temperature: 屏幕下方带 °C 或 MTC 字样的数字（如 25.0）。\n3. pts: 屏幕下方百分号旁的数字（通常为 100.0 或 98.5）。\n\n【重要】严格按以下 JSON 格式输出，不要输出任何其他内容：\n{\"ph_value\": 0.00, \"temperature\": 0.0, \"pts\": 0.0}\n\n注意：只输出纯数字 JSON，不要含单位，无法读取设为 null。"
+  },
+  "F4": {
+    "name": "水质检测仪",
+    "prompt": "这是水质检测仪（SN: 43373），检测总硬度。请先判断当前是高量程还是低量程模式，然后读取屏幕显示的所有数值。\n\n读数字段：当前量程模式(mode)、检测日期(date)、空白值(blank_value)、检测值(test_value)、吸光度(absorbance)、含量mg/L(content_mg_l)、透光度%(transmittance)\n\n【重要】严格按以下JSON格式输出，不要输出任何其他内容：\n{\"mode\": \"high\", \"date\": \"\", \"blank_value\": 0, \"test_value\": 0, \"absorbance\": 0.000, \"content_mg_l\": 0.00, \"transmittance\": 0.0}\n\n注意：mode字段为\"high\"（高量程）或\"low\"（低量程），date字段为字符串（格式xxxx-xx-xx xx:xx:xx），其他字段为数值，无法读取设为null。只输出一行JSON。"
+  },
+  "F5": {
+    "name": "表界面张力仪",
+    "prompt": "这是表界面张力仪（SN: 101663），读取屏幕上的六个数值：表/界面张力(tension,nN/m)、温度(temperature,°C)、上层密度(upper_density,g/cm3)、下层密度(lower_density,g/cm3)、上升速度(rise_speed,mm/min)、下降速度(fall_speed,mm/min)。\n\n【重要】严格按以下JSON格式输出，不要输出任何其他内容：\n{\"tension\": 0.000, \"temperature\": 0.0, \"upper_density\": 0.000, \"lower_density\": 0.000, \"rise_speed\": 0, \"fall_speed\": 0}\n\n注意：张力通常带3位小数，可能为负数；温度若显示N/A则设为null；F值旁的-/+是按钮不是正负号。只输出一行JSON，数值不含单位。"
+  },
+  "F6": {
+    "name": "电动搅拌器",
+    "prompt": "这是电动搅拌器（SN: 208721），屏幕显示三行数值：第一行转速(rotation_speed,rpm)、第二行张力(torque,N/cm)、第三行时间(time,XX:XX)。\n\n【重要】严格按以下JSON格式输出，不要输出任何其他内容：\n{\"rotation_speed\": 0, \"torque\": 0, \"time\": \"00:00\"}\n\n注意：time字段保留MM:SS字符串格式；torque可能显示为00表示0N/cm。只输出一行JSON，数值不含单位。"
+  },
+  "F61": {
+    "name": "实验台面",
+    "prompt": null
+  },
+  "F63": {
+    "name": "中央控制器",
+    "prompt": null
+  },
+  "F67": {
+    "name": "手持终端",
+    "prompt": null
+  },
+  "F7": {
+    "name": "水浴锅",
+    "prompt": "这是水浴锅（SN: 37844），读取屏幕显示的温度(temperature,°C)和定时时间(time,min)。\n\n【重要】严格按以下JSON格式输出，不要输出任何其他内容：\n{\"temperature\": 0.0, \"time\": 0}\n\n注意：TEMP标签下方为温度（通常带1位小数，LED数码管小数点很小，如\"17.3\"），TIME标签下方为时间（整数分钟）。只输出一行JSON，数值不含单位。"
+  },
+  "F74": {
+    "name": "计时器",
+    "prompt": null
+  },
+  "F8": {
+    "name": "6速旋转粘度计",
+    "prompt": "这是6速旋转粘度计（SN: 106833），读取屏幕上的八个数值：实施读数(actual_reading)、最大读数(max_reading)、最小读数(min_reading)、转速(rotation_speed,RPM)、剪切速率(shear_rate,S-1)、剪切应力(shear_stress,Pa)、表观粘度(apparent_viscosity,mpa.s)、5秒平均值(avg_5s,mpa.s)。\n\n【重要】严格按以下JSON格式输出，不要输出任何其他内容：\n{\"actual_reading\": 0, \"max_reading\": 0, \"min_reading\": 0, \"rotation_speed\": 0, \"shear_rate\": 0, \"shear_stress\": 0.000, \"apparent_viscosity\": 0.0, \"avg_5s\": 0.0}\n\n只输出一行JSON，数值不含单位，无法读取设为null。"
+  },
+  "F9": {
+    "name": "状态灯",
+    "prompt": null
+  }
+}

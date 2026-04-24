@@ -229,7 +229,7 @@ export default function TemplateEditor({ template, onSave, onCancel }: TemplateE
                     className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm outline-none focus:border-blue-500 transition"
                     placeholder="显示名称 (如 pH值)"
                     value={field.label}
-                    onChange={(handleFieldChange(idx, 'label', e.target.value) as any)}
+                    onChange={(e) => handleFieldChange(idx, 'label', e.target.value)}
                   />
                 </div>
                 <div className="space-y-1">
