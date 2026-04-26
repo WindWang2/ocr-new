@@ -25,4 +25,8 @@ models/
 *.bin
 *.ckpt
 
+# Deployment artifacts
 deploy/
+*.zip
+deploy_windows.bat
+ocr_deploy_package*.zip
