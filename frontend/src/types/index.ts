@@ -2,6 +2,8 @@ export type ExperimentType =
   | 'kinematic_viscosity'
   | 'apparent_viscosity'
   | 'surface_tension'
+  | 'water_mineralization'
+  | 'ph_value'
   | 'test'
 
 export interface InstrumentFieldConfig {

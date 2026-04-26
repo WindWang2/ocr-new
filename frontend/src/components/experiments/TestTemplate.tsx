@@ -19,11 +19,11 @@ export default function TestTemplate({ experiment, onRefresh }: ExperimentViewPr
 
   // 获取最大的 run_index，以确定显示多少个“测量批次”
   const maxRunIndex = experiment.readings.length > 0 
-    ? Math.max(...experiment.readings.map(r => r.run_index || 1))
-    : 1
+    ? Math.max(...experiment.readings.map(r => r.run_index || 0))
+    : 0
   
   // 始终显示到 maxRunIndex，并额外多显示一个空白批次用于“继续测量”
-  const runIndices = Array.from({ length: maxRunIndex + 1 }, (_, i) => i + 1)
+  const runIndices = Array.from({ length: maxRunIndex + 2 }, (_, i) => i)
 
   return (
     <div className="space-y-16">
@@ -33,7 +33,7 @@ export default function TestTemplate({ experiment, onRefresh }: ExperimentViewPr
         </div>
         <div>
           <h2 className="text-2xl font-black text-gray-900 tracking-tight">🔬 全场景仪表调试 工作站</h2>
-          <p className="text-xs font-medium text-gray-500 mt-1">系统全量化验证：按批次查看并触发 F0~F8 所有仪表</p>
+          <p className="text-xs font-medium text-gray-500 mt-1">系统全量化验证：按批次查看并触发 D0~D8 所有仪表</p>
         </div>
       </div>
 
@@ -42,7 +42,7 @@ export default function TestTemplate({ experiment, onRefresh }: ExperimentViewPr
           <div key={runIndex} className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <div className="flex items-center gap-3">
               <div className="px-4 py-1.5 bg-gray-900 text-white text-xs font-black rounded-full uppercase tracking-widest shadow-lg shadow-gray-200">
-                Measurement Set {runIndex}
+                Measurement Set {runIndex + 1}
               </div>
               <div className="h-[2px] flex-grow bg-gray-100 rounded-full" />
               {runIndex > maxRunIndex && (
@@ -57,10 +57,10 @@ export default function TestTemplate({ experiment, onRefresh }: ExperimentViewPr
                 const reading = experiment.readings.find(r => r.field_key === field.fieldKey && r.run_index === runIndex) || null
 
                 return (
-                  <div key={`${runIndex}-${field.fieldKey}`} className="group">
+                  <div key={field.fieldKey} className="group">
                     <div className="flex items-center justify-between px-1 mb-2">
                       <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest group-hover:text-brand-500 transition-colors">
-                        F{instrumentId} · {field.label}
+                        D{instrumentId} · {field.label}
                       </span>
                     </div>
                     <ManualInstrumentSlot
@@ -72,7 +72,7 @@ export default function TestTemplate({ experiment, onRefresh }: ExperimentViewPr
                       slotIndex={runIndex}
                       reading={reading}
                       onComplete={onRefresh}
-                      instrumentFields={instrumentConfigs?.[`F${instrumentId}`]?.readings}
+                      instrumentFields={instrumentConfigs?.[`D${instrumentId}`]?.readings}
                     />
                   </div>
                 )
@@ -83,4 +83,4 @@ export default function TestTemplate({ experiment, onRefresh }: ExperimentViewPr
       </div>
     </div>
   )
-}
+}

@@ -34,8 +34,8 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
   const [selectedReadings, setSelectedReadings] = useState<Record<number, string[]>>(() =>
     Object.fromEntries(schema.instrumentFields.map((f, i) => [i, []]))
   )
-  // F0 专用：手动/自动模式
-  const [f0Mode, setF0Mode] = useState<'auto' | 'manual'>('auto')
+  // D0 混调器专用：手动/自动模式
+  const [d0Mode, setD0Mode] = useState<'auto' | 'manual'>('auto')
 
   useEffect(() => {
     getCameraInstruments().then(data => {
@@ -44,7 +44,7 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
       schema.instrumentFields.forEach((f, i) => {
         if (type === 'test') {
           // 测试模板默认选中所有读数
-          defaults[i] = (data[`F${f.targetInstrumentId}`]?.readings || []).map(r => r.key)
+          defaults[i] = (data[`D${f.targetInstrumentId}`]?.readings || []).map(r => r.key)
         } else {
           // 模板实验默认只选 schema 中指定的一种读数
           defaults[i] = [f.readingKey]
@@ -72,19 +72,19 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
         ...c,
         selected_readings: selectedReadings[i] || [],
       }
-      if (fieldKey === 'F0') cfg.camera_mode = f0Mode
+      if (fieldKey === 'D0') cfg.camera_mode = d0Mode
       return cfg
     })
     await onSubmit(manualParams, configs).catch(e => setError(e.message))
   }
 
   const getInstrumentName = (instrumentId: number) => {
-    const key = `F${instrumentId}`
+    const key = `D${instrumentId}`
     return instruments[key]?.name || ''
   }
 
   const getReadings = (instrumentId: number) => {
-    const key = `F${instrumentId}`
+    const key = `D${instrumentId}`
     return instruments[key]?.readings || []
   }
 
@@ -133,7 +133,7 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
           const instrumentName = getInstrumentName(instrumentId)
           const readings = getReadings(instrumentId)
           const selected = selectedReadings[idx] || []
-          const isF0 = field.fieldKey === 'F0'
+          const isD0 = field.fieldKey === 'D0'
           return (
             <div key={field.fieldKey} className="bg-white/60 rounded-lg px-3 py-3 space-y-2.5 border border-gray-100/50">
               <div className="flex items-center gap-3">
@@ -143,24 +143,24 @@ export default function Step2Config({ name, type, onBack, onSubmit, loading }: P
                     {instrumentName || `仪器类别 #${instrumentId}`}
                   </div>
                 </div>
-                {/* F0 专用：自动/手动模式选择 */}
-                {isF0 && (
+                {/* D0 专用：自动/手动模式选择 */}
+                {isD0 && (
                   <div className="flex rounded-lg overflow-hidden border border-gray-200 text-xs shrink-0">
                     <button
                       type="button"
-                      onClick={() => setF0Mode('auto')}
+                      onClick={() => setD0Mode('auto')}
                       className={`px-3 py-1.5 font-medium transition ${
-                        f0Mode === 'auto' ? 'text-white' : 'bg-white text-gray-500 hover:bg-gray-50'
+                        d0Mode === 'auto' ? 'text-white' : 'bg-white text-gray-500 hover:bg-gray-50'
                       }`}
-                      style={f0Mode === 'auto' ? { background: 'var(--brand)' } : undefined}
+                      style={d0Mode === 'auto' ? { background: 'var(--brand)' } : undefined}
                     >自动模式</button>
                     <button
                       type="button"
-                      onClick={() => setF0Mode('manual')}
+                      onClick={() => setD0Mode('manual')}
                       className={`px-3 py-1.5 font-medium transition border-l border-gray-200 ${
-                        f0Mode === 'manual' ? 'text-white' : 'bg-white text-gray-500 hover:bg-gray-50'
+                        d0Mode === 'manual' ? 'text-white' : 'bg-white text-gray-500 hover:bg-gray-50'
                       }`}
-                      style={f0Mode === 'manual' ? { background: 'var(--brand)' } : undefined}
+                      style={d0Mode === 'manual' ? { background: 'var(--brand)' } : undefined}
                     >手动模式</button>
                   </div>
                 )}

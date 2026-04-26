@@ -4,7 +4,10 @@ import { exportUrl, runGlobalScan } from '@/lib/api'
 import KinematicViscosity from '@/components/experiments/KinematicViscosity'
 import ApparentViscosity from '@/components/experiments/ApparentViscosity'
 import SurfaceTension from '@/components/experiments/SurfaceTension'
+import WaterMineralization from '@/components/experiments/WaterMineralization'
+import PhValue from '@/components/experiments/PhValue'
 import TestTemplate from '@/components/experiments/TestTemplate'
+import OperationStepsFormatter from './OperationStepsFormatter'
 import { Download, Play, RefreshCw, Zap } from 'lucide-react'
 import React, { useState } from 'react'
 
@@ -12,6 +15,8 @@ const EXPERIMENT_VIEWS: Record<ExperimentType, React.ComponentType<ExperimentVie
   kinematic_viscosity: KinematicViscosity,
   apparent_viscosity: ApparentViscosity,
   surface_tension: SurfaceTension,
+  water_mineralization: WaterMineralization,
+  ph_value: PhValue,
   test: TestTemplate,
 }
 
@@ -77,6 +82,15 @@ export default function ExperimentDetail({ experiment, onRefresh }: Props) {
 
       {/* Content */}
       <div className="p-8 bg-gray-50/30">
+        {schema.operationSteps && (
+          <div className="mb-8 bg-white border border-blue-100 rounded-2xl p-6 shadow-sm">
+            <h3 className="text-sm font-bold text-blue-800 mb-3 flex items-center gap-2">
+              <span className="w-1.5 h-4 bg-blue-500 rounded-full" />
+              实验操作步骤与注意事项
+            </h3>
+            <OperationStepsFormatter text={schema.operationSteps} svg={schema.flowchartSvg} />
+          </div>
+        )}
         <ViewComponent
           experiment={experiment}
           onRefresh={onRefresh}

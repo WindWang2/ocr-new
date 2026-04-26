@@ -7,6 +7,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Tuple
 
+from backend.services.path_utils import normalize_path
+
 logger = logging.getLogger(__name__)
 
 # 项目根目录
@@ -24,18 +26,19 @@ class MockCameraClient:
     def __init__(self, camera_id: int, image_dir: str | None = None):
         self.camera_id = camera_id
         if image_dir:
-            self.image_dir = Path(image_dir) / f"F{camera_id}"
+            self.image_dir = normalize_path(image_dir) / f"F{camera_id}"
         else:
             self.image_dir = PROJECT_ROOT / "camera_images" / f"F{camera_id}"
 
     def _find_latest_image(self) -> Path | None:
-        """返回图片目录中修改时间最新的 .bmp 图片，忽略 crops 子目录"""
+        """返回图片目录中修改时间最新的图片（.bmp, .jpg, .jpeg），忽略 crops 子目录"""
         if not self.image_dir.exists():
             return None
             
-        # 寻找所有 .bmp 图片（包括大小写）
+        # 寻找所有支持的图片格式（包括大小写）
         images = []
-        for pattern in ["*.bmp", "*.BMP"]:
+        patterns = ["*.bmp", "*.BMP", "*.jpg", "*.JPG", "*.jpeg", "*.JPEG"]
+        for pattern in patterns:
             # 使用 rglob 递归搜索，但后续过滤掉 crops 目录
             for p in self.image_dir.rglob(pattern):
                 if p.is_file():
@@ -48,14 +51,20 @@ class MockCameraClient:
         return max(images, key=lambda p: p.stat().st_mtime)
 
     def capture_image(self) -> Tuple[bool, dict]:
-        """只获取图片，不做OCR，返回图片路径"""
+        """只获取图片，返回原始高清路径"""
         image_path = self._find_latest_image()
         if image_path is None:
             msg = f"[Mock 相机{self.camera_id}] 目录 {self.image_dir} 中未找到图片"
             logger.error(msg)
             return False, {"camera_id": self.camera_id, "error": msg}
-        logger.info(f"[Mock 相机{self.camera_id}] 获取图片: {image_path}")
-        return True, {"camera_id": self.camera_id, "image_path": str(image_path)}
+        
+        logger.info(f"[Mock 相机{self.camera_id}] 获取图片: {image_path.name}")
+        return True, {
+            "camera_id": self.camera_id, 
+            "image_path": str(image_path),
+            "raw_image_path": str(image_path),
+            "success": True
+        }
 
     def trigger_and_read(self) -> Tuple[bool, dict]:
         """
@@ -111,6 +120,7 @@ class MockCameraClient:
             "raw_response": str(readings),
             "reading": reading_value,
             "image_path": str(image_path),
+            "raw_image_path": str(image_path),
             "confidence": result.get("confidence"),
             "timestamp": datetime.now().isoformat(),
             "success": True,

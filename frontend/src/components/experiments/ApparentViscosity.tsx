@@ -10,10 +10,11 @@ export default function ApparentViscosity({ experiment, onRefresh }: ExperimentV
   const schema = EXPERIMENT_SCHEMAS.apparent_viscosity
   
   const calculateViscosity = () => {
-    const readings = experiment.readings.filter(r => r.field_key === 'rpm100')
+    const readings = experiment.readings.filter(r => r.field_key === 'reading_100rpm')
     if (readings.length === 0) return null
-    const alpha = Number(readings[readings.length - 1].value) || 0
-    return (alpha * 5.077 / 1.704).toFixed(2)
+    const sum = readings.reduce((acc, r) => acc + (Number(r.value) || 0), 0)
+    const avgAlpha = sum / readings.length
+    return (avgAlpha * 5.077 / 1.704).toFixed(2)
   }
 
   const viscosity = calculateViscosity()
@@ -40,7 +41,7 @@ export default function ApparentViscosity({ experiment, onRefresh }: ExperimentV
                  <div className="w-1.5 h-6 bg-purple-500 rounded-full" />
                  <h3 className="text-lg font-black text-gray-800">{field.label}</h3>
                  <span className="text-xs text-gray-300 font-bold bg-gray-50 px-3 py-1 rounded-full uppercase tracking-tighter">
-                   Instrument: F{instrumentId}
+                   Instrument: D{instrumentId}
                  </span>
               </div>
 

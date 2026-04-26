@@ -102,8 +102,11 @@ class OpenAICompatibleProvider:
         # 重试逻辑
         for attempt in range(3):
             try:
+                # 智能拼接 URL：如果 base_url 已经包含 /v1 则不再重复添加
+                endpoint = f"{self._base_url}/chat/completions" if self._base_url.endswith("/v1") else f"{self._base_url}/v1/chat/completions"
+                
                 resp = self._http.post(
-                    f"{self._base_url}/v1/chat/completions",
+                    endpoint,
                     headers=headers,
                     json=payload,
                 )

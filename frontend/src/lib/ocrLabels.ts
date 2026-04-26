@@ -1,6 +1,6 @@
 /** OCR 英文键 → 中文标签映射 */
 export const OCR_KEY_LABELS: Record<string, string> = {
-  // F0 混调器
+  // D0 混调器
   seg1_speed:      '段一转速',
   seg1_time:       '段一时间',
   seg2_speed:      '段二转速',
@@ -15,18 +15,18 @@ export const OCR_KEY_LABELS: Record<string, string> = {
   high_time:       '高速时间',
   low_speed:       '低速转速',
   low_time:        '低速时间',
-  // F1/F2 天平
+  // D1/D2 天平
   weight:          '重量',
-  // F3 pH计
+  // D3 pH计
   ph_value:        'pH值',
   pts:             'PTS值',
-  // F4 水质检测仪
+  // D4 水质检测仪
   blank_value:     '空白值',
   test_value:      '检测值',
   absorbance:      '吸光度',
   content_mg_l:    '含量(mg/L)',
   transmittance:   '透光度',
-  // F5 表界面张力仪
+  // D5 表界面张力仪
   tension:         '张力',
   interfacial_tension: '界面张力',
   contact_angle:   '接触角',
@@ -34,13 +34,13 @@ export const OCR_KEY_LABELS: Record<string, string> = {
   lower_density:   '下层密度',
   rise_speed:      '上升速度',
   fall_speed:      '下降速度',
-  // F6 搅拌器
+  // D6 搅拌器
   rotation_speed:  '转速',
   torque:          '扭矩',
-  // F7 水浴锅
+  // D7 水浴锅
   temperature:     '温度',
   time:            '时间',
-  // F8 6速粘度计
+  // D8 6速粘度计
   actual_reading:  '实际读数',
   max_reading:     '最大读数',
   min_reading:     '最小读数',

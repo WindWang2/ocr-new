@@ -69,7 +69,7 @@ class DynamicInstrumentLibrary:
     def get_template(cls, instrument_key: str) -> Optional[Dict[str, Any]]:
         """获取仪器的识别模板（优先从数据库获取，否则回退到配置文件）"""
         # 1. 尝试作为 ID (0-8) 从数据库获取
-        inst_type_id = str(instrument_key).replace('F', '').replace('f', '')
+        inst_type_id = str(instrument_key).replace('D', '').replace('d', '').replace('F', '').replace('f', '')
         try:
             from backend.models.database import get_template
             t = get_template(inst_type_id)
@@ -84,12 +84,12 @@ class DynamicInstrumentLibrary:
             logger.warning(f"从数据库获取模板失败: {e}")
 
         # 2. 回退到 INSTRUMENT_CONFIGS 静态配置
-        f_key = f"F{inst_type_id}"
-        config = INSTRUMENT_CONFIGS.get(f_key)
+        d_key = f"D{inst_type_id}"
+        config = INSTRUMENT_CONFIGS.get(d_key)
         if config:
             # 转换为统一的字典格式供下游使用
             return {
-                'instrument_type': f_key,
+                'instrument_type': d_key,
                 'name': config.get('name'),
                 'prompt_template': config.get('prompt'),
                 'fields': [], # 静态配置暂无详细字段定义
@@ -99,7 +99,7 @@ class DynamicInstrumentLibrary:
 
     @classmethod
     def get_camera_prompt(cls, camera_name_or_id: str) -> str:
-        """根据相机代号（如 F3）或仪器 ID 获取对应的 Prompt"""
+        """根据仪器代号（如 D3）或仪器 ID 获取对应的 Prompt"""
         t = cls.get_template(camera_name_or_id)
         if t:
             return t.get('prompt_template', "")
@@ -112,10 +112,10 @@ class DynamicInstrumentLibrary:
     # Legacy hardcoded templates removed - using database driven lookup in get_camera_prompt
 
     @classmethod
-    def get_instrument_type_from_camera(cls, camera_name: str, parsed: dict = None) -> str:
-        """从相机代号获取仪器显示名称（动态从数据库获取）"""
+    def get_instrument_type_from_camera(cls, instrument_name: str, parsed: dict = None) -> str:
+        """从仪器代号获取显示名称（动态从数据库获取）"""
         try:
-            inst_type_id = str(camera_name).replace('F', '').replace('f', '')
+            inst_type_id = str(instrument_name).replace('D', '').replace('d', '')
             from backend.models.database import get_template
             t = get_template(inst_type_id)
             if t:
@@ -279,7 +279,7 @@ class MultimodalModelReader:
             ]
 
             # 调用 LLM Provider
-            result_text = self._provider.chat(
+            response_text = self._provider.chat(
                 messages=messages,
                 images=base64_images,
                 temperature=Config.MODEL_TEMPERATURE,
@@ -287,10 +287,14 @@ class MultimodalModelReader:
             )
             
             # 强化调试日志：清理掉那些烦人的 <|image|>
-            clean_log = re.sub(r'<\|image\|>', '', result_text).strip()
+            clean_log = re.sub(r'<\|image\|>', '', response_text).strip()
             print(f"\n[DEBUG RAW LLM] (Cleaned) >>>\n{clean_log}\n<<< [DEBUG RAW LLM]\n")
             
-            parsed = self._parse_json_response(result_text)
+            parsed = self._parse_json_response(response_text)
+            
+            # 将原始输出存入字典，以便后续在 UI 中展示审计
+            if isinstance(parsed, dict):
+                parsed["_raw_output"] = response_text
             
             # 【核心修正】不再使用 Pydantic 进行严格过滤，仅在结果缺失时填充 null
             if instrument_type and "error" not in parsed:
@@ -306,14 +310,9 @@ class MultimodalModelReader:
                 logger.warning("分析失败或解析错误，原始响应: %s", clean_log)
 
             # 保存响应到JSON文件（调试用）
-            self._save_response_debug(image_path_str, call_type, prompt, result_text, parsed)
+            self._save_response_debug(image_path_str, call_type, prompt, response_text, parsed)
 
             return parsed
-        except Exception as e:
-            logger.error("多模态模型分析失败: %s", e)
-            import traceback
-            traceback.print_exc()
-            return {"error": str(e)}
         except Exception as e:
             logger.error("多模态模型分析失败: %s", e)
             import traceback
@@ -525,108 +524,195 @@ class InstrumentReader:
 
         return None
 
-    def detect_only(self, image_path: str) -> Dict[str, Any]:
-        """仅运行检测并返回裁剪图路径，不进行读取"""
-        print(f"\n[DEBUG_DETECT] Entering detect_only: {image_path}\n")
-        from PIL import Image
-        from pathlib import Path
-
-        # 核心逻辑：防止对已经是裁剪图的图片进行二次裁剪
-        path_obj = Path(image_path)
-        if "crops" in path_obj.parts or "_crop_" in path_obj.name:
-            logger.info("输入图片已是裁剪图，跳过二次裁剪逻辑")
-            # 尝试计算相对于挂载根目录的路径
-            try:
-                parts = list(path_obj.parts)
-                start_idx = 0
-                for i in range(len(parts)-1, -1, -1):
-                    if re.match(r'^[Ff]\d+$', parts[i]):
-                        start_idx = i
-                        break
-                rel_path = "/".join(parts[start_idx:])
-            except:
-                rel_path = path_obj.name
-                
-            return {"success": True, "results": [{
-                "success": True,
-                "bbox": [0,0,0,0],
-                "yolo_confidence": 1.0,
-                "class_id": int(re.search(r'F(\d+)', path_obj.name).group(1)) if "F" in path_obj.name else 0,
-                "cropped_image_path": rel_path.replace("\\", "/"),
-                "image_source": image_path
-            }]}
-
-        # 懒加载 YOLO
+    def _ensure_yolo(self):
+        """确保 YOLO 检测器已初始化 (懒加载)"""
         if not hasattr(self, 'yolo_detector'):
-            print("[DEBUG_DETECT] Initializing YOLO...")
+            logger.info("正在初始化 YOLO 检测器...")
             from backend.services.yolo_detector import YOLOInstrumentDetector
+            # 这里的阈值可以根据需要调整，或从 Config 加载
             self.yolo_detector = YOLOInstrumentDetector(confidence_threshold=0.1, iou_threshold=0.15)
-            
-        try:
-            img = Image.open(image_path)
-        except Exception as e:
-            return {"success": False, "error": f"YOLO_IMAGE_OPEN_ERR [{image_path}]: {e}"}
 
-        detections = self.yolo_detector.detect(img)
-        print(f"\n[DEBUG_DETECT] YOLO found {len(detections)} targets\n")
-        if not detections:
-            logger.info("YOLO 未检测到任何目标")
+    @classmethod
+    def get_d4_rotation_angle(cls, img_pil: Image.Image) -> Optional[int]:
+        """为 D4 (水质仪) 计算应该旋转的角度 (PIL.Image.ROTATE_*)"""
+        import cv2
+        import numpy as np
+        
+        try:
+            cv_img = cv2.cvtColor(np.array(img_pil.convert("RGB")), cv2.COLOR_RGB2GRAY)
+            h, w = cv_img.shape
+            
+            if w >= h: # 只有横向才需要判断旋转
+                scale = 600 / max(h, w)
+                small_img = cv2.resize(cv_img, (int(w * scale), int(h * scale)))
+                sh, sw = small_img.shape
+                
+                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+                enhanced_img = clahe.apply(small_img)
+                edges = cv2.Canny(enhanced_img, 50, 150)
+                
+                left_half = edges[:, :sw//2]
+                right_half = edges[:, sw//2:]
+                
+                left_density = np.sum(left_half > 0)
+                right_density = np.sum(right_half > 0)
+                
+                if left_density > right_density:
+                    logger.info(f"D4 自适应旋转：屏幕在左侧，逆时针旋转90度 (ROTATE_90)")
+                    return Image.ROTATE_90
+                else:
+                    logger.info(f"D4 自适应旋转：屏幕在右侧，顺时针旋转90度 (ROTATE_270)")
+                    return Image.ROTATE_270
+        except Exception as e:
+            logger.warning(f"D4 旋转处理失败: {e}")
+        return None
+
+    def detect_only(self, image_path: str, target_class_id: int = None) -> Dict[str, Any]:
+        """仅运行检测并返回裁剪图路径，不进行读取。"""
+        from PIL import Image, ImageEnhance
+        from pathlib import Path
+        import time as _time
+        import cv2
+        import numpy as np
+
+        path_obj = Path(image_path)
+
+        # ── 智能寻找原始高分辨率图 ──────────────────────────────────────
+        is_already_crop = "crops" in path_obj.parts or "_crop_" in path_obj.name
+        
+        # 如果已经是裁剪图，且没有指定 target_class_id（说明是扫描），则寻找其母图
+        if is_already_crop:
+            # 尝试回溯到母图（即去掉 _crop_xxx 部分）
+            raw_name = re.sub(r'_crop_.*$', '', path_obj.stem)
+            potential_raw = path_obj.parent.parent / f"{raw_name}.bmp"
+            if not potential_raw.exists():
+                potential_raw = path_obj.parent.parent / f"{raw_name}.jpg"
+            if not potential_raw.exists():
+                potential_raw = path_obj.parent.parent / f"{raw_name}_rotated.png"
+            
+            if potential_raw.exists():
+                logger.info(f"从裁剪图回溯到母图: {potential_raw.name}")
+                image_path = str(potential_raw)
+                path_obj = potential_raw
+            else:
+                if target_class_id is None:
+                    logger.info("已经是裁剪图且找不到母图，直接返回")
+                    return {"success": True, "results": [{"success": True, "class_id": 0, "image_source": str(path_obj), "yolo_confidence": 1.0, "bbox": [0,0,0,0], "cropped_image_path": path_obj.name}]}
+
+        # ── Step 0: 初始化 YOLO ───────────────────────────────────────
+        self._ensure_yolo()
+        self.yolo_detector.confidence_threshold = 0.1 # 提高基础门槛
+        
+        try:
+            img_full = Image.open(image_path).convert("RGB")
+        except Exception as e:
+            return {"success": False, "error": f"图片打开失败: {e}"}
+
+        # --- D4 水质检测仪: 获取原图的旋转角度，但不改变原图 ---
+        d4_rot_angle = None
+        if target_class_id == 4 or (target_class_id is None and "F5" in path_obj.name):
+            d4_rot_angle = self.get_d4_rotation_angle(img_full)
+
+        full_w, full_h = img_full.size
+        scale_factor = 3.0 if max(full_w, full_h) > 1500 else 1.0
+        
+        if scale_factor > 1.0:
+            img_small = img_full.resize((int(full_w / scale_factor), int(full_h / scale_factor)), Image.Resampling.LANCZOS)
+        else:
+            img_small = img_full
+
+        raw_detections = self.yolo_detector.detect(img_small)
+        
+        if not raw_detections:
             return {"success": False, "error": "未检出结果"}
 
-        logger.info("YOLO 检测到 %d 个目标", len(detections))
+        # ── 同类去重逻辑 (增加中心点距离权重) ──────────────────────────────────
+        best_per_class = {}
+        img_center_x, img_center_y = img_small.size[0] / 2, img_small.size[1] / 2
+        
+        for det in raw_detections:
+            x1, y1, x2, y2, conf, cid = det
+            cid = int(cid)
+            area = (x2 - x1) * (y2 - y1)
+            # 计算距离中心点的距离权重 (距离越近，权重越高)
+            dx = (x1 + x2) / 2 - img_center_x
+            dy = (y1 + y2) / 2 - img_center_y
+            dist_weight = 1.0 / (1.0 + (dx**2 + dy**2)**0.5 / 1000.0)
+            
+            score = area * conf * dist_weight 
+            
+            if cid not in best_per_class or score > best_per_class[cid]['score']:
+                best_per_class[cid] = {'det': det, 'score': score}
+        
+        detections = [v['det'] for v in best_per_class.values()]
+        logger.info(f"YOLO 去重后保留 {len(detections)} 个目标")
+
+        # ── Step 2-4: 逐目标裁剪 ─────────────────────────────────────
+        orig_path = Path(image_path)
+        crops_dir = orig_path.parent / "crops"
+        crops_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = _time.strftime("%H%M%S")
 
         all_results = []
         for det in detections:
             x1, y1, x2, y2, yolo_conf, class_id = det
-            detected_camera_name = f"F{int(class_id)}"
+            class_id = int(class_id)
             
-            # Crop image (from original high-res img)
-            cropped_img_high_res = self.yolo_detector.crop_instrument(img, det, padding=15)
+            # 回到原图尺度
+            x1_f, y1_f, x2_f, y2_f = int(x1*scale_factor), int(y1*scale_factor), int(x2*scale_factor), int(y2*scale_factor)
             
-            # Save high-res cropped image first
-            orig_path = Path(image_path)
-            crops_dir = orig_path.parent / "crops"
-            crops_dir.mkdir(parents=True, exist_ok=True)
+            # 严格按照 BBox 裁剪，不加 padding
+            cropped = img_full.crop((max(0, x1_f), max(0, y1_f), min(full_w, x2_f), min(full_h, y2_f)))
             
-            timestamp = __import__("time").strftime("%H%M%S")
-            # 统一使用 .png 保持高清无损
-            crop_filename = f"{orig_path.stem}_crop_{detected_camera_name}_{timestamp}.png"
+            # --- D4 水质检测仪: 在裁剪图上执行自适应旋转 ---
+            if class_id == 4 and d4_rot_angle is not None:
+                logger.info("对 D4 裁剪图应用旋转...")
+                cropped = cropped.transpose(d4_rot_angle)
+            
+            if max(cropped.size) > 800: # 稍微提高裁剪图分辨率，防止读数模糊
+                s = 800 / max(cropped.size)
+                cropped = cropped.resize((int(cropped.size[0]*s), int(cropped.size[1]*s)), Image.Resampling.LANCZOS)
+
+            crop_filename = f"{orig_path.stem}_crop_F{class_id}_{timestamp}.png"
             crop_path = crops_dir / crop_filename
-            cropped_img_high_res.save(crop_path, "PNG", optimize=False)
-            
-            # 计算相对于挂载根目录的干净路径
+            cropped.save(crop_path, "PNG")
+
+            # 构建前端可访问的路径
             try:
+                # 寻找路径中的 Fx 标志
                 parts = list(crop_path.parts)
-                start_idx = 0
-                for i in range(len(parts)-1, -1, -1):
-                    if re.match(r'^[Ff]\d+$', parts[i]):
-                        start_idx = i
-                        break
-                relative_crop_path = "/".join(parts[start_idx:])
+                fx_idx = -1
+                for i, part in enumerate(parts):
+                    if re.match(r'^[Ff]\d+$', part): fx_idx = i; break
+                if fx_idx != -1:
+                    rel_path = "/".join(parts[fx_idx:])
+                else:
+                    rel_path = f"{orig_path.parent.name}/crops/{crop_filename}"
             except:
-                relative_crop_path = f"{detected_camera_name}/crops/{crop_filename}"
-                
+                rel_path = f"F{class_id}/crops/{crop_filename}"
+
             all_results.append({
                 "success": True,
-                "bbox": [float(x1), float(y1), float(x2), float(y2)],
+                "bbox": [float(x1_f), float(y1_f), float(x2_f), float(y2_f)],
                 "yolo_confidence": float(yolo_conf),
-                "class_id": int(class_id),
-                "cropped_image_path": str(relative_crop_path).replace("\\", "/"),
-                "image_source": crop_path 
+                "class_id": class_id,
+                "cropped_image_path": str(rel_path).replace("\\", "/"),
+                "image_source": str(crop_path),
             })
-            
-        return {"success": True, "results": all_results}
-            
+
         return {"success": True, "results": all_results}
 
     def read_instrument(self, image_path: str, target_class_id: int = None) -> Dict[str, Any]:
         """识别仪表：先检测后读取"""
         print(f"\n[DEBUG_ENTRY] read_instrument CALLED: path={image_path}, target={target_class_id}\n")
         
-        # 1. 动态调整检测阈值：如果指定了目标，临时降到 0.05 以捕获弱特征目标 (如 F7)
+        # 1. 确保 YOLO 已初始化，并动态调整检测阈值
+        self._ensure_yolo()
         original_conf = self.yolo_detector.confidence_threshold
+        
+        # 如果指定了目标，我们稍微降低 YOLO 门槛以防漏检，但在后续逻辑中会进行严格的置信度+位置筛选
         if target_class_id is not None:
-            self.yolo_detector.confidence_threshold = 0.05
+            self.yolo_detector.confidence_threshold = 0.1
             
         detect_result = self.detect_only(image_path)
         self.yolo_detector.confidence_threshold = original_conf # 立即恢复原阈值
@@ -637,22 +723,36 @@ class InstrumentReader:
             
             if target_class_id is not None:
                 # 策略：只要用户指定了目标，就只在检出的框里找这个目标
-                target_matches = [d for d in all_detections if d["class_id"] == target_class_id]
+                # 【核心修复】增加最低置信度过滤 (0.3)，防止电源头等 0.1 置信度的误检被选中
+                target_matches = [d for d in all_detections if d["class_id"] == target_class_id and d["yolo_confidence"] > 0.3]
                 
                 if target_matches:
-                    best_det = max(target_matches, key=lambda x: x["yolo_confidence"])
-                    logger.info(f"YOLO 成功(通过降低阈值)捕获目标 F{target_class_id}，执行特写读取")
+                    # 如果有多个匹配（如 F3 画面中有两个天平，或者有误检），
+                    # 引入“面积 * 置信度”权重，并优先选择靠近中心的目标
+                    def score_match(det):
+                        bbox = det["bbox"]
+                        area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                        # 计算中心点偏移
+                        center_x = (bbox[0] + bbox[2]) / 2
+                        # 假设输入图大致尺寸（detect_only 里的 img_full 会打印尺寸）
+                        # 这是一个启发式评分：面积越大、置信度越高、越靠近中间，得分越高
+                        return area * det["yolo_confidence"]
+
+                    best_det = max(target_matches, key=score_match)
+                    logger.info(f"YOLO 捕获目标 F{target_class_id}，置信度: {best_det['yolo_confidence']:.2f}")
                     return self._read_with_det_info(image_path, best_det, target_class_id)
                 else:
-                    # 如果降了阈值也没抓到 F7，但抓到了别的，也应该忽略别的，退回 F7 的全图读取
-                    logger.warning(f"调低阈值后仍未发现 F{target_class_id}，尝试对全图进行强行读取...")
+                    # 如果没抓到合格的目标，退回全图读取
+                    logger.warning(f"未发现置信度 > 0.3 的 F{target_class_id}，尝试对全图进行强行读取...")
                     return self._read_by_camera(image_path, f"F{target_class_id}")
             
             # 如果没有指定目标，则执行普通多目标读取
             all_results = []
             for det_info in all_detections:
-                res = self._read_with_det_info(image_path, det_info)
-                all_results.append(res)
+                # 过滤掉置信度太低的目标
+                if det_info["yolo_confidence"] > 0.3:
+                    res = self._read_with_det_info(image_path, det_info)
+                    all_results.append(res)
                 
             if len(all_results) == 1: return all_results[0]
             elif len(all_results) > 1:
@@ -663,7 +763,7 @@ class InstrumentReader:
                     "readings": combined_readings, "all_results": all_results, "method": "yolo_multi_crop"
                 }
 
-        # 3. 核心逻辑修正：如果 YOLO 完全没检测到，但用户指定了 target_class_id，强行读取
+        # 3. 如果 YOLO 完全没检测到，但用户指定了 target_class_id，强行读取
         if target_class_id is not None:
             logger.warning(f"YOLO 完全未能检测到目标，强行对全图执行 F{target_class_id} 识别")
             return self._read_by_camera(image_path, f"F{target_class_id}")

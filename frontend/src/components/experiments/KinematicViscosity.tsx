@@ -54,9 +54,10 @@ export default function KinematicViscosity({ experiment, onRefresh }: Experiment
               <div className="flex items-center gap-3 border-b-2 border-gray-50 pb-3">
                  <div className="w-1.5 h-6 bg-amber-500 rounded-full" />
                  <h3 className="text-lg font-black text-gray-800">{field.label}</h3>
-                 <span className="text-xs text-gray-400 font-bold bg-gray-50 px-3 py-1 rounded-full uppercase tracking-tighter">
-                   Target: F{instrumentId}
+                 <span className="text-xs text-gray-300 font-bold bg-gray-50 px-3 py-1 rounded-full uppercase tracking-tighter">
+                   Instrument: D{instrumentId}
                  </span>
+
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">

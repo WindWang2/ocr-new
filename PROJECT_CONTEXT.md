@@ -7,21 +7,22 @@
 - **GPU Status**: NVIDIA 1080 Ti (using CUDA)
 
 ## Instrument-to-Camera Master Mapping
-This mapping is defined in `backend/instrument_configs.py`:
+This mapping is defined in `backend/instrument_configs.py`. 
+**注意：仪器命名为 D0-D8，物理相机命名为 F0-F8。**
 
-| Instrument | Name | YOLO Cls | Camera ID | Post-Process |
+| Instrument (仪器) | Name | YOLO Cls | Camera (相机) | Post-Process |
 | :--- | :--- | :--- | :--- | :--- |
-| **F0** | 吴英混调器 | 0 | 0 | - |
-| **F1** | 电子天平 1 | 1 | 3 | decimal_correction_2 |
-| **F2** | 电子天平 2 | 2 | 3 | decimal_correction_2 |
-| **F3** | PH 计 | 3 | 3 | - |
-| **F4** | 水质检测仪 | 4 | 5 | - |
-| **F5** | 表界面张力仪 | 5 | 5 | - |
-| **F6** | 搅拌器 | 6 | 7 | - |
-| **F7** | 水浴锅 | 7 | 7 | - |
-| **F8** | 粘度计 | 8 | 8 | - |
+| **D0** | 吴英混调器 | 0 | F0 | - |
+| **D1** | 电子天平 1 | 1 | F3 | decimal_correction_2 |
+| **D2** | 电子天平 2 | 2 | F3 | decimal_correction_2 |
+| **D3** | PH 计 | 3 | F3 | - |
+| **D4** | 水质检测仪 | 4 | F5 | - |
+| **D5** | 表界面张力仪 | 5 | F5 | - |
+| **D6** | 搅拌器 | 6 | F7 | - |
+| **D7** | 水浴锅 | 7 | F7 | - |
+| **D8** | 粘度计 | 8 | F8 | - |
 
 ## Key Logic
 - **YOLO First**: All OCR tasks (except direct camera read) perform YOLO detection first.
-- **Forced Context**: When requesting instrument `X`, the system forces the usage of `FX` prompt and post-processing, even if YOLO misidentifies the class ID, as long as a bounding box is found.
+- **Forced Context**: When requesting instrument `DX`, the system forces the usage of `DX` prompt and post-processing, even if YOLO misidentifies the class ID, as long as a bounding box is found.
 - **Logging**: Detailed multimodal traces are marked with `[DEBUG RAW LLM]` and `[DEBUG_CROP]`.

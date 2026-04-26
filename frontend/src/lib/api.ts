@@ -168,12 +168,18 @@ export async function getCameraInstruments(): Promise<Record<string, { name: str
 export async function captureImage(
   experimentId: number,
   cameraId: number,
+  targetInstrumentId?: number,
+  fieldKey?: string,
 ): Promise<{ success: boolean; image_path?: string; camera_id?: number; detail?: string }> {
   const data = await request<{ success: boolean; image_path?: string; camera_id?: number; detail?: string }>(
     `/experiments/${experimentId}/capture`,
     {
       method: 'POST',
-      body: JSON.stringify({ camera_id: cameraId }),
+      body: JSON.stringify({ 
+        camera_id: cameraId,
+        target_instrument_id: targetInstrumentId,
+        field_key: fieldKey
+      }),
     },
   )
   if (!data.success) throw new Error(data.detail || '拍照失败')

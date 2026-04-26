@@ -13,6 +13,8 @@ from PIL import Image
 
 from backend.models.database import get_camera_by_id, get_cameras
 
+from backend.services.path_utils import normalize_path
+
 logger = logging.getLogger(__name__)
 
 # 导入配置（从项目根目录）
@@ -33,7 +35,8 @@ class CameraClient:
         self.trigger_prefix = self.config.get("trigger_prefix", "VTFP")
 
         # 图片目录: F{camera_id}/YYYYMMDD/
-        self.image_dir = Path(self.config.get("image_dir", "camera_images")) / f"F{camera_id}"
+        base_dir = normalize_path(self.config.get("image_dir", "camera_images"))
+        self.image_dir = base_dir / f"F{camera_id}"
     
     def _default_config(self):
         """默认配置"""
@@ -118,13 +121,11 @@ class CameraClient:
             if not image_path:
                 return False, {"camera_id": self.camera_id, "error": "拍照成功但未检测到新图片文件", "success": False}
 
-            # 转换 BMP -> JPG（缩小）
-            jpg_path = self._convert_bmp_to_jpg(image_path)
-
             return True, {
                 "camera_id": self.camera_id,
                 "raw_response": response,
-                "image_path": str(jpg_path),
+                "image_path": str(image_path),
+                "raw_image_path": str(image_path), # 原始高分辨率路径 (BMP)
                 "timestamp": datetime.now().isoformat(),
                 "success": True
             }
@@ -176,23 +177,7 @@ class CameraClient:
         # 按文件名降序（文件名含时间戳），取最新
         return max(image_files, key=lambda p: p.name)
 
-    def _convert_bmp_to_jpg(self, src: Path, max_size: int = 500) -> Path:
-        """将 BMP 转换为 JPG 并缩小，返回 JPG 路径"""
-        jpg_path = src.with_suffix(".jpg")
 
-        try:
-            img = Image.open(src).convert("RGB")
-            w, h = img.size
-            if max(w, h) > max_size:
-                scale = max_size / max(w, h)
-                img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-            img.save(str(jpg_path), "JPEG", quality=85)
-            logger.info(f"[相机{self.camera_id}] BMP->JPG: {src.name} -> {jpg_path.name} ({img.size[0]}x{img.size[1]})")
-        except Exception as e:
-            logger.warning(f"[相机{self.camera_id}] 图片转换失败: {e}，使用原图")
-            return src
-
-        return jpg_path
 
     def get_reading_only(self) -> Tuple[bool, dict]:
         """仅读取当前读数（不触发拍照）"""

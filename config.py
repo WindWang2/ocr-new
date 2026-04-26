@@ -61,7 +61,7 @@ class Config:
 
     # 图像缩放配置
     IMAGE_RESIZE_ENABLED = _env("IMAGE_RESIZE_ENABLED", True, lambda x: x.lower() == 'true')
-    IMAGE_MAX_SIZE = _env("IMAGE_MAX_SIZE", 500, int)  # 最长边像素数
+    IMAGE_MAX_SIZE = _env("IMAGE_MAX_SIZE", 800, int)  # 最长边像素数（提升至800保证清晰度）
 
     # 触发指令格式
     TRIGGER_COMMAND_PREFIX = _env("TRIGGER_COMMAND_PREFIX", "VTFP")

@@ -13,10 +13,12 @@ interface Props {
 }
 
 const TYPE_STYLES: Record<ExperimentType, { bg: string; text: string; dot: string }> = {
-  kinematic_viscosity: { bg: 'bg-brand-50',  text: 'text-brand-600',  dot: 'bg-brand-500' },
-  apparent_viscosity:  { bg: 'bg-purple-50', text: 'text-purple-600', dot: 'bg-purple-500' },
-  surface_tension:     { bg: 'bg-cyan-50',   text: 'text-cyan-600',   dot: 'bg-cyan-500' },
-  test:                { bg: 'bg-gray-50',   text: 'text-gray-500',   dot: 'bg-gray-400' },
+  kinematic_viscosity:  { bg: 'bg-brand-50',  text: 'text-brand-600',  dot: 'bg-brand-500' },
+  apparent_viscosity:   { bg: 'bg-purple-50', text: 'text-purple-600', dot: 'bg-purple-500' },
+  surface_tension:      { bg: 'bg-cyan-50',   text: 'text-cyan-600',   dot: 'bg-cyan-500' },
+  water_mineralization: { bg: 'bg-emerald-50',text: 'text-emerald-600',dot: 'bg-emerald-500' },
+  ph_value:             { bg: 'bg-rose-50',   text: 'text-rose-600',   dot: 'bg-rose-500' },
+  test:                 { bg: 'bg-gray-50',   text: 'text-gray-500',   dot: 'bg-gray-400' },
 }
 
 export default function ExperimentList({ experiments, selectedId, onSelect, onNew, onDelete }: Props) {

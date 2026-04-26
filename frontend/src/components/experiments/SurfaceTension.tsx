@@ -50,8 +50,9 @@ export default function SurfaceTension({ experiment, onRefresh }: ExperimentView
                 <div className="w-1.5 h-6 bg-brand-500 rounded-full" />
                 <h3 className="text-lg font-black text-gray-800">{field.label}</h3>
                 <span className="text-xs text-gray-300 font-bold bg-gray-50 px-3 py-1 rounded-full uppercase tracking-tighter">
-                  Target Instrument: F{instrumentId}
+                  Instrument: D{instrumentId}
                 </span>
+
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">

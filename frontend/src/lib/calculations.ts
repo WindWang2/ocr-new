@@ -29,7 +29,7 @@ export function calcKinematic(readings: Reading[], params: ManualParams): Kinema
 
 export function calcApparent(readings: Reading[]): ApparentResult {
   const eta = (runIndex: number): number | null => {
-    const r = readings.find(r => r.field_key === 'rpm100' && r.run_index === runIndex)
+    const r = readings.find(r => r.field_key === 'reading_100rpm' && r.run_index === runIndex)
     if (!r) return null
     return round4((r.value * 5.077) / 1.704)
   }

@@ -51,12 +51,12 @@ class MultiInstrumentPipeline:
         for det in detections:
             x1, y1, x2, y2, yolo_conf, class_id = det
             class_id = int(class_id)
-            camera_name = f"F{class_id}"
+            instrument_type = f"D{class_id}"
             
             # 获取对应的模板
             template = DynamicInstrumentLibrary.get_template(str(class_id))
             if not template:
-                logger.warning(f"No template found for class {class_id} (mapped to {camera_name})")
+                logger.warning(f"No template found for class {class_id} (mapped to {instrument_type})")
                 continue
 
             prompt = template.get('prompt_template')
@@ -89,7 +89,7 @@ class MultiInstrumentPipeline:
 
                 result = {
                     'bbox': [float(x1), float(y1), float(x2), float(y2)],
-                    'instrument_type': camera_name,
+                    'instrument_type': instrument_type,
                     'class_id': class_id,
                     'yolo_confidence': float(yolo_conf),
                     'readings': filtered_readings, # 只返回该仪器的合法字段
@@ -98,7 +98,7 @@ class MultiInstrumentPipeline:
                 }
                 results.append(result)
             except Exception as e:
-                logger.error(f"Failed to read instrument {camera_name}: {e}")
+                logger.error(f"Failed to read instrument {instrument_type}: {e}")
 
         return results
 

@@ -144,13 +144,31 @@ class TensiometerPostProcessor(BasePostProcessor):
         # 基础处理已经把字符串转为了浮点数，直接返回即可
         return super().process(readings)
 
+class StirrerPostProcessor(BasePostProcessor):
+    """搅拌器 (F6) 后处理器：保留原始字符串格式，不进行自动数值转换"""
+    def process(self, readings: Dict[str, Any]) -> Dict[str, Any]:
+        corrected = dict(readings)
+        for k, v in corrected.items():
+            if isinstance(v, str):
+                # 仅去除多余空格，不进行 float 转换，以保留 00:10 这种格式
+                corrected[k] = v.strip()
+        return corrected
+
+class ViscometerPostProcessor(BasePostProcessor):
+    """粘度计 (F8) 后处理器"""
+    def process(self, readings: Dict[str, Any]) -> Dict[str, Any]:
+        # 基础数字提取
+        return super().process(readings)
+
 # 注册表
 POST_PROCESSOR_REGISTRY = {
     "balance": BalancePostProcessor(),
     "ph_meter": PHMeterPostProcessor(),
     "mixer": MixerPostProcessor(),
+    "stirrer": StirrerPostProcessor(),
     "tensiometer": TensiometerPostProcessor(),
     "water_bath": WaterBathPostProcessor(),
+    "viscometer": ViscometerPostProcessor(),
     "default": BasePostProcessor() # 默认处理，将字符串转数字
 }
 
@@ -176,8 +194,9 @@ def apply_post_processing(class_id: int, readings: Dict[str, Any]) -> Dict[str, 
         2: "balance",
         3: "ph_meter",
         5: "tensiometer",
-        6: "mixer", # 包含 time 转换
-        7: "water_bath"  # 包含温度小数点转换
+        6: "stirrer", # F6 使用专用后处理器，保留 MM:SS
+        7: "water_bath", # 包含温度小数点转换
+        8: "viscometer"
     }
     fallback_type = fallback_map.get(class_id)
     if fallback_type and fallback_type in POST_PROCESSOR_REGISTRY:

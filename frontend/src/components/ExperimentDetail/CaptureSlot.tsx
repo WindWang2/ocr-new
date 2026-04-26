@@ -52,24 +52,17 @@ export default function CaptureSlot({
     setAllOcr(null)
     try {
       setPhase('capturing')
-      const { image_path } = await captureImage(experimentId, cameraId)
+      const { image_path } = await captureImage(experimentId, cameraId, targetInstrumentId, fieldKey)
       if (image_path) setPendingImage(image_path)
 
-      // 只要过了检测（YOLO），就更新裁剪图显示
-      if (image_path) {
-        setPhase('processing') // 进入处理阶段（检测中）
-        const detectRes = await triggerInstrument(experimentId, fieldKey, targetInstrumentId)
-        if (detectRes.success) {
-          const previewImg = detectRes.cropped_image_path || detectRes.image_path;
-          if (previewImg) setPendingImage(previewImg);
-        }
-      }
-
-      setPhase('processing') // 确保处于处理阶段（识别中）
+      setPhase('processing') // 进入 OCR 识别阶段
       const result = await runTestCapture(
         experimentId, fieldKey, cameraId, image_path, readingKey, slotIndex, false, undefined, targetInstrumentId
       )
-      if (result.image_path) setPendingImage(result.image_path)
+      // 【关键修正】OCR 完成后，使用返回的裁剪图路径更新预览，确保显示的是截图而非整图
+      if (result.image_path) {
+        setPendingImage(result.image_path)
+      }
       if (result.all_ocr) setAllOcr(result.all_ocr)
 
       if (!result.success) {
@@ -146,7 +139,7 @@ export default function CaptureSlot({
   const hasImage = !!displayImage
 
   const ocrEntries = allOcr
-    ? Object.entries(allOcr).filter(([, v]) => v !== null && typeof v === 'number')
+    ? Object.entries(allOcr).filter(([, v]) => v !== null && (typeof v === 'number' || typeof v === 'string'))
     : []
 
   const inputBox = (
@@ -187,7 +180,7 @@ export default function CaptureSlot({
       <div className="flex flex-col border border-gray-100 rounded-xl overflow-hidden bg-white">
         <div className="relative bg-gray-50 h-28">
           {displayImage ? (
-            <img src={`http://localhost:8001/images/${displayImage}`} alt={label} className="w-full h-full object-cover" />
+            <img src={`http://localhost:8001/images/${displayImage}`} alt={label} className="w-full h-full object-contain" />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
               <Camera size={20} className="text-gray-200" />
@@ -245,7 +238,7 @@ export default function CaptureSlot({
         <div className="flex flex-col gap-2 shrink-0">
           <div className="relative w-48 h-36 rounded-lg overflow-hidden bg-gray-50 border border-gray-100">
             {displayImage ? (
-              <img src={`http://localhost:8001/images/${displayImage}`} alt={label} className="w-full h-full object-cover" />
+              <img src={`http://localhost:8001/images/${displayImage}`} alt={label} className="w-full h-full object-contain" />
             ) : (
               <div className="w-full h-full flex items-center justify-center">
                 <Camera size={24} className="text-gray-200" />

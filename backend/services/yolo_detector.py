@@ -71,6 +71,17 @@ class YOLOInstrumentDetector:
             scores = results.boxes.conf
             labels = results.boxes.cls
             
+            logger.info(f"[DEBUG_YOLO] Raw boxes from model: {len(boxes)}")
+            try:
+                with open("yolo_debug_raw.log", "a", encoding="utf-8") as f:
+                    f.write(f"Raw boxes: {len(boxes)}\n")
+                    for b, s, l in zip(boxes, scores, labels):
+                        f.write(f"  Class: {int(l)}, Score: {float(s):.3f}, Box: {[float(x) for x in b]}\n")
+            except:
+                pass
+            for b, s, l in zip(boxes, scores, labels):
+                logger.info(f"  [DEBUG_YOLO] Class: {int(l)}, Score: {float(s):.3f}, Box: {[float(x) for x in b]}")
+            
             # Apply manual NMS to suppress overlapping boxes from End-to-End models
             if self.agnostic_nms:
                 keep = ops.nms(boxes, scores, self.iou_threshold)
@@ -116,7 +127,24 @@ class YOLOInstrumentDetector:
                 # 存储时附带一个几何评分 (用于后期筛选)
                 detections.append([x1, y1, x2, y2, confidence, class_id])
                 
+        # 默认按置信度排序
         detections.sort(key=lambda x: x[4], reverse=True)
+        
+        # --- 启发式优化：针对特定仪器的多框筛选 ---
+        # 对于 F7 (水浴锅)，通常会同时检出“机身”和“屏幕”。
+        # 屏幕面积较小且位于机身内部或边缘，我们优先选择较小的框以确保截取到读数。
+        if any(d[5] == 7 for d in detections):
+            f7_candidates = [d for d in detections if d[5] == 7]
+            if len(f7_candidates) > 1:
+                # 按面积排序
+                f7_candidates.sort(key=lambda x: (x[2]-x[0])*(x[3]-x[1]))
+                best_f7 = f7_candidates[0] # 面积最小的
+                # 如果这个最小框的置信度还行，就把它推到最前面
+                if best_f7[4] > 0.08:
+                    detections.remove(best_f7)
+                    detections.insert(0, best_f7)
+                    logger.info(f"F7 策略生效：优先选择了较小的屏幕框 (Area: {(best_f7[2]-best_f7[0])*(best_f7[3]-best_f7[1]):.0f})")
+
         return detections
 
     def crop_instrument(self, image: Image.Image, bbox: List[float], padding: int = 15) -> Image.Image:

@@ -100,18 +100,27 @@ async def global_exception_handler(request: Request, exc: Exception):
         }
     )
 
+from backend.services.path_utils import normalize_path
+
 # 静态文件：智能挂载图片目录
 # 优先从数据库读取，如果没有则使用 Config 默认值
 image_dir_path = get_config("image_dir") or Config.CAMERA_IMAGE_DIR
-_images_dir = Path(image_dir_path)
+_images_dir = normalize_path(image_dir_path)
 if not _images_dir.is_absolute():
     # 尝试基于项目根目录定位
-    _images_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", image_dir_path)))
+    _images_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", str(_images_dir))))
 
 _images_dir.mkdir(parents=True, exist_ok=True)
 logger.info(f"图片映射根目录: {_images_dir}")
 
 from fastapi.responses import FileResponse
+
+@app.on_event("startup")
+async def startup_event():
+    # 启动异步清理任务
+    asyncio.create_all_tasks = False # Compatibility
+    # asyncio.create_task(image_cleanup_task())
+    logger.info("后台清理任务已启动")
 
 @app.get("/images/{path:path}")
 async def serve_image(path: str):
@@ -132,15 +141,24 @@ async def serve_image(path: str):
         if png_path.exists():
             return FileResponse(str(png_path))
 
-    # 3. 如果还是没有，尝试在 crops 目录下寻找
+    # 3. 如果还是没有，尝试在 crops 及其子目录下寻找 (智能纠错)
     if "crops" not in str(path):
         p = Path(path)
+        # 优先尝试新结构：parent/crops/display/name
+        alt_path_display = _images_dir / p.parent / "crops" / "display" / p.name
+        if alt_path_display.exists(): return FileResponse(str(alt_path_display))
+            
+        # 尝试：parent/crops/name (旧结构)
         alt_path = _images_dir / p.parent / "crops" / p.name
-        # 同时也检查 crops 下的 .png
-        alt_path_png = _images_dir / p.parent / "crops" / (p.stem + ".png")
-        
         if alt_path.exists(): return FileResponse(str(alt_path))
+            
+        # 同时也检查 png 格式 (如果是旧的 jpg 引用)
+        alt_path_png = _images_dir / p.parent / "crops" / (p.stem + ".png")
         if alt_path_png.exists(): return FileResponse(str(alt_path_png))
+            
+        # 检查 display 下的 png
+        alt_path_display_png = _images_dir / p.parent / "crops" / "display" / (p.stem + ".png")
+        if alt_path_display_png.exists(): return FileResponse(str(alt_path_display_png))
 
     raise HTTPException(status_code=404, detail=f"图片不存在: {path}")
 
@@ -153,6 +171,12 @@ async def image_cleanup_task():
             now = time.time()
             for root, dirs, files in os.walk(str(_images_dir)):
                 for file in files:
+                    # 安全检查：仅删除图片文件，且跳过隐藏目录（如 .git）
+                    if not file.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+                        continue
+                    if '.git' in root or '.gemini' in root:
+                        continue
+                        
                     file_path = os.path.join(root, file)
                     if now - os.path.getmtime(file_path) > retention_days * 86400:
                         os.remove(file_path)
@@ -169,8 +193,8 @@ async def startup_event():
         Config.update_image_dir(db_image_dir)
         logger.info(f"已同步数据库图片目录到 Config: {db_image_dir}")
 
-    asyncio.create_task(image_cleanup_task())
-    asyncio.create_task(_task_cleanup_loop())
+    # asyncio.create_task(image_cleanup_task())
+    # asyncio.create_task(_task_cleanup_loop())
 
 
 async def _task_cleanup_loop():
@@ -220,31 +244,15 @@ def _convert_and_save_image(raw_path: str, camera_id: int, run_index: int) -> Op
     if not src.exists():
         return None
 
+    # 完全禁用预览图生成逻辑
+    # 获取相对于 _images_dir 的相对路径，供前端访问
+    import os
     try:
-        img = Image.open(src).convert("RGB")
-    except Exception as e:
-        logger.warning(f"无法打开图片 {raw_path}: {e}")
-        return None
-
-    # 缩放：最长边 500px
-    max_size = 500
-    w, h = img.size
-    if max(w, h) > max_size:
-        scale = max_size / max(w, h)
-        new_w, new_h = int(w * scale), int(h * scale)
-        img = img.resize((new_w, new_h), Image.LANCZOS)
-
-    # 保存到 camera_images/F{camera_id}/ 目录
-    save_dir = _images_dir / f"F{camera_id}"
-    save_dir.mkdir(parents=True, exist_ok=True)
-    save_name = f"{run_index:03d}_{datetime.now().strftime('%H%M%S')}.jpg"
-    save_path = save_dir / save_name
-    img.save(str(save_path), "JPEG", quality=85)
-
-    # 返回相对路径
-    relative = f"F{camera_id}/{save_name}"
-    logger.info(f"图片已保存: {save_path} ({img.size[0]}x{img.size[1]})")
-    return relative
+        abs_path = os.path.abspath(raw_path)
+        rel_path = os.path.relpath(abs_path, _images_dir)
+        return rel_path.replace('\\', '/')
+    except:
+        return raw_path
 
 
 # ==================== 请求模型 ====================
@@ -295,6 +303,8 @@ class ExperimentRunField(BaseModel):
 
 class ExperimentCaptureBody(BaseModel):
     camera_id: int
+    target_instrument_id: Optional[int] = None
+    field_key: Optional[str] = None
 
 
 class InstrumentMappingUpdate(BaseModel):
@@ -495,7 +505,7 @@ def get_experiment_api(exp_id: int):
 @app.post("/experiments")
 def create_experiment_api(exp: ExperimentCreate):
     """创建实验记录"""
-    VALID_TYPES = {"kinematic_viscosity", "apparent_viscosity", "surface_tension", "test"}
+    VALID_TYPES = {"kinematic_viscosity", "apparent_viscosity", "surface_tension", "water_mineralization", "ph_value", "test"}
     if exp.type not in VALID_TYPES:
         raise HTTPException(status_code=400, detail=f"无效实验类型: {exp.type}")
     try:
@@ -515,62 +525,18 @@ def create_experiment_api(exp: ExperimentCreate):
 @app.post("/experiments/{exp_id}/run")
 def run_experiment_field(exp_id: int, body: ExperimentRunField):
     """
-    触发单个字段的相机拍照→OCR→保存读数
-
-    每次点击"拍照识别"按钮调用一次，明确指定 field_key 和 camera_id。
+    触发单个字段的相机拍照→OCR→保存读数 (已升级为现代 YOLO+LLM 流程)
     """
-    experiment = get_experiment(exp_id)
-    if not experiment:
-        raise HTTPException(status_code=404, detail="实验不存在")
-
-    # 计算本次读数的 run_index（当前该字段已有几条读数 + 1）
-    existing = [r for r in experiment["readings"] if r["field_key"] == body.field_key]
-    run_index = len(existing) + 1
-
-    # 调用相机拍照并 OCR（根据 mock 开关选择真实或模拟客户端）
-    mock_enabled = get_config("mock_camera_enabled", default=False)
-    try:
-        image_dir = get_config("image_dir", default=None) or None
-        if mock_enabled:
-            client = MockCameraClient(camera_id=body.camera_id, image_dir=image_dir)
-            success, result = client.trigger_and_read()
-        else:
-            camera_config = Config.get_camera_config()
-            if image_dir:
-                camera_config["image_dir"] = image_dir
-            client = CameraClient(camera_id=body.camera_id, config=camera_config)
-            success, result = client.trigger_and_read()
-    except Exception as e:
-        logger.error(f"相机 {body.camera_id} 拍照失败: {e}")
-        return {"success": False, "detail": f"相机连接失败: {e}"}
-
-    if not success:
-        return {"success": False, "detail": result.get("error", "OCR 识别失败")}
-
-    # 将 OCR 字符串解析为 float（取数字部分）
-    raw_reading = result.get("reading", "")
-    try:
-        value = float(str(raw_reading).strip())
-    except (ValueError, TypeError):
-        logger.error(f"相机 {body.camera_id} OCR 结果无法解析为数字: {raw_reading!r}")
-        return {"success": False, "detail": f"OCR 结果无法解析: {raw_reading}"}
-
-    # 处理图片：BMP转JPG + 缩放
-    saved_image_path = None
-    raw_image_path = result.get("image_path")
-    if raw_image_path:
-        saved_image_path = _convert_and_save_image(raw_image_path, body.camera_id, run_index)
-
-    reading = create_reading(
-        experiment_id=exp_id,
+    result = _core_run_test_capture(
+        exp_id=exp_id,
         field_key=body.field_key,
         camera_id=body.camera_id,
-        value=value,
-        run_index=run_index,
-        confidence=result.get("confidence"),
-        image_path=saved_image_path,
+        run_index=body.run_index
     )
-    return {"success": True, "reading": reading}
+    if not result.get("success"):
+        return {"success": False, "detail": result.get("detail", "识别失败")}
+        
+    return {"success": True, "reading": result.get("reading")}
 
 
 @app.post("/experiments/{exp_id}/capture")
@@ -603,20 +569,71 @@ def capture_image_endpoint(exp_id: int, body: ExperimentCaptureBody):
     if not success:
         return {"success": False, "detail": result.get("error", "拍照失败")}
 
-    raw_image_path = result.get("image_path")
-    if not raw_image_path:
+    # 获取原始高分辨率路径（BMP）
+    original_path = result.get("raw_image_path") or result.get("image_path")
+    if not original_path:
         return {"success": False, "detail": "未获取到图片"}
 
-    # 计算该相机的下一个 run_index
-    existing_images = set(
-        r.get("image_path") for r in experiment["readings"]
-        if r.get("image_path") and r["camera_id"] == body.camera_id
-    )
-    run_index = len(existing_images) + 1
+    # ── 直接用原图走 YOLO，不再生成 500px 预览 ──────────────────────
+    try:
+        from instrument_reader import InstrumentReader
+        reader = InstrumentReader()
+        raw_abs_path = os.path.abspath(str(original_path))
+        if not os.path.exists(raw_abs_path):
+            return {"success": False, "detail": f"原始图片不存在: {raw_abs_path}"}
 
-    saved_image_path = _convert_and_save_image(raw_image_path, body.camera_id, run_index)
-    return {"success": True, "image_path": saved_image_path, "camera_id": body.camera_id}
+        detect_result = reader.detect_only(raw_abs_path, target_class_id=body.target_instrument_id)
+        if detect_result["success"] and detect_result["results"]:
+            detected_ids = [r["class_id"] for r in detect_result["results"]]
+            logger.info(f"Capture YOLO 检测到: {detected_ids}")
 
+            # 如果指定了目标仪器，找对应的 crop
+            if body.target_instrument_id is not None:
+                best_crop = next((r for r in detect_result["results"] if r["class_id"] == body.target_instrument_id), None)
+                if best_crop:
+                    logger.info(f"Capture 对位成功: D{body.target_instrument_id} -> {best_crop['cropped_image_path']}")
+                    return {"success": True, "image_path": best_crop["cropped_image_path"], "camera_id": body.camera_id}
+
+            # 未指定目标或未匹配到目标，返回第一个检测结果
+            first_crop = detect_result["results"][0]
+            return {"success": True, "image_path": first_crop["cropped_image_path"], "camera_id": body.camera_id}
+
+    except Exception as e:
+        import traceback
+        logger.warning(f"Capture YOLO 检测失败: {e}\n{traceback.format_exc()}")
+
+    # ── YOLO 失败兜底：保存一张 600px 的全图 ────────────────────────
+    from PIL import Image as _PILImage
+    try:
+        img = _PILImage.open(raw_abs_path).convert("RGB")
+        w, h = img.size
+        max_side = 600
+        if max(w, h) > max_side:
+            s = max_side / max(w, h)
+            img = img.resize((int(w * s), int(h * s)), _PILImage.Resampling.LANCZOS)
+        fallback_dir = Path(raw_abs_path).parent / "crops"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        fallback_name = f"fallback_{body.camera_id}_{__import__('time').strftime('%H%M%S')}.png"
+        fallback_path = fallback_dir / fallback_name
+        img.save(str(fallback_path), "PNG")
+        # 计算相对路径
+        parts = list(fallback_path.parts)
+        start_idx = 0
+        for i in range(len(parts) - 1, -1, -1):
+            if re.match(r'^[Ff]\d+$', parts[i]):
+                start_idx = i
+                break
+        rel = "/".join(parts[start_idx:])
+        return {"success": True, "image_path": rel.replace("\\", "/"), "camera_id": body.camera_id}
+    except Exception as e2:
+        logger.error(f"Fallback 也失败: {e2}")
+        return {"success": False, "detail": f"YOLO 和 Fallback 均失败"}
+
+@app.post("/test/detect_only")
+def test_detect_only(path: str):
+    from instrument_reader import InstrumentReader
+    reader = InstrumentReader()
+    return reader.detect_only(path)
 
 class ExperimentRunTestBody(BaseModel):
     field_key: str
@@ -626,7 +643,7 @@ class ExperimentRunTestBody(BaseModel):
     reading_key: Optional[str] = None   # 仪器读数键，如 "actual_reading"、"tension"
     run_index: Optional[int] = None     # 槽位序号（0-based），不传则追加
     precise: bool = False               # 精准识别：先 OCR 提取文字识别仪器类型，再二次读数
-    camera_mode: Optional[str] = None  # F0 专用："auto"（自动模式）或 "manual"（手动模式）
+    camera_mode: Optional[str] = None  # D0 专用："auto"（自动模式）或 "manual"（手动模式）
 
 
 def _core_run_test_capture(
@@ -661,7 +678,7 @@ def _core_run_test_capture(
 
     # 1. 确定目标仪器 ID
     if target_instrument_id is None:
-        match = re.search(r'F(\d+)', field_key)
+        match = re.search(r'D(\d+)', field_key)
         if match:
             target_instrument_id = int(match.group(1))
         else:
@@ -677,6 +694,7 @@ def _core_run_test_capture(
         physical_camera_id = camera_id
 
     saved_image_path = image_path
+    high_res_src_path = None # 初始化
 
     if not saved_image_path:
         mock_enabled = get_config("mock_camera_enabled", default=False)
@@ -694,36 +712,49 @@ def _core_run_test_capture(
                 client = CameraClient(camera_id=physical_camera_id, config=camera_config)
                 success, result = client.capture_image()
         except Exception as e:
-            logger.error(f"物理相机 {physical_camera_id} (仪器 F{target_instrument_id}) 拍照失败: {e}")
+            logger.error(f"物理相机 {physical_camera_id} (仪器 D{target_instrument_id}) 拍照失败: {e}")
             return {"success": False, "detail": f"相机连接失败: {e}"}
 
         if not success:
             return {"success": False, "detail": result.get("error", "拍照失败")}
 
-        raw_image_path = result.get("image_path")
-        if raw_image_path:
-            saved_image_path = _convert_and_save_image(raw_image_path, physical_camera_id, 0)
+        preview_src_path = result.get("image_path")
+        high_res_src_path = result.get("raw_image_path") # 优先使用原始 BMP/JPG
+        
+        # 核心修复：不再调用 _convert_and_save_image，因为它会用缩略图覆盖同名的原图。
+        # 直接使用 CameraClient 已经处理好的路径。
+        if preview_src_path:
+            # 获取相对于 _images_dir 的相对路径，供前端访问
+            try:
+                saved_image_path = os.path.relpath(preview_src_path, _images_dir)
+            except:
+                saved_image_path = preview_src_path
 
     if not saved_image_path:
         return {"success": False, "detail": "无可用图片"}
 
     # OCR
-    full_image_path = os.path.abspath(str(_images_dir / saved_image_path))
-    logger.info(f"==> DBUG: full_image_path in _core_run_test_capture: {full_image_path}")
+    # 核心修复：优先在原始高分辨率图上执行 OCR (如果存在)
+    # 如果 saved_image_path 本身就是绝对路径且存在，直接用它
+    if os.path.isabs(str(saved_image_path)) and os.path.exists(str(saved_image_path)):
+        ocr_input_path = str(saved_image_path)
+    else:
+        ocr_input_path = high_res_src_path if (high_res_src_path and os.path.exists(high_res_src_path)) else os.path.abspath(str(_images_dir / saved_image_path))
+    
+    logger.info(f"==> OCR 输入路径: {ocr_input_path}")
     print(f"\n[MAIN_DEBUG] target_instrument_id={target_instrument_id}, physical_camera_id={physical_camera_id}, saved_image_path={saved_image_path}\n")
     try:
         from instrument_reader import InstrumentReader
         from backend.services.llm_provider import get_global_provider
         reader = InstrumentReader(provider=get_global_provider())
-        print(f"\n[MAIN_DEBUG_PRE_OCR] Calling reader.read_instrument for {full_image_path}, target={target_instrument_id}\n")
-        
+        ocr_start = time.time()
         # 优化：如果是裁剪后的图片且已知仪器 ID，直接走专用 Prompt 通道，跳过冗余 YOLO
         if target_instrument_id is not None and "crop" in str(saved_image_path):
-            logger.info(f"检测到裁剪图，直接执行 F{target_instrument_id} 专用识别...")
-            # 使用更智能的 read_instrument，支持目标过滤和后处理
-            ocr_result = reader.read_instrument(full_image_path, target_class_id=target_instrument_id)
+            logger.info(f"检测到裁剪图，直接执行 D{target_instrument_id} 专用识别...")
+            ocr_result = reader.read_instrument(ocr_input_path, target_class_id=target_instrument_id)
         else:
-            ocr_result = reader.read_instrument(full_image_path, target_class_id=target_instrument_id)
+            ocr_result = reader.read_instrument(ocr_input_path, target_class_id=target_instrument_id)
+        ocr_ms = (time.time() - ocr_start) * 1000
     except Exception as e:
         logger.error(f"OCR 失败: {e}")
         return {"success": False, "detail": f"OCR 识别失败: {e}"}
@@ -836,12 +867,31 @@ def _core_run_test_capture(
 
     primary_value = numeric_ocr.get(primary_key, 0.0) if primary_key else 0.0
     
-    logger.info(f"F{target_instrument_id} 识别结果汇总: {numeric_ocr}, 选定主值: {primary_key}={primary_value}")
+    logger.info(f"D{target_instrument_id} 识别结果汇总: {numeric_ocr}, 选定主值: {primary_key}={primary_value}")
 
     target_image_path = best_target.get("cropped_image_path", saved_image_path)
     final_run_index = run_index if run_index is not None else len(
         [r for r in experiment["readings"] if r["field_key"] == field_key]
     )
+
+    # 准备 OCR 数据，包含识别图路径和检测框以便审计
+    ocr_metadata = filtered_readings.copy()
+    ocr_metadata["_full_image_path"] = saved_image_path
+    
+    # 性能指标
+    if 'ocr_ms' in locals():
+        ocr_metadata["_performance"] = {
+            "total_ms": round(ocr_ms, 1)
+        }
+    
+    # 提取并保存原始 LLM 输出 (如果存在)
+    if "_raw_output" in readings_dict:
+        ocr_metadata["_raw_output"] = readings_dict["_raw_output"]
+        
+    if best_target.get("recognition_image_path"):
+        ocr_metadata["_recognition_image_path"] = best_target["recognition_image_path"]
+    if best_target.get("bbox"):
+        ocr_metadata["_bbox"] = best_target["bbox"]
 
     reading = upsert_reading(
         experiment_id=exp_id,
@@ -850,13 +900,14 @@ def _core_run_test_capture(
         value=primary_value,
         run_index=final_run_index,
         image_path=target_image_path,
-        ocr_data=filtered_readings # 保持完整 OCR 数据
+        ocr_data=ocr_metadata # 记录包含识别图路径的完整元数据
     )
 
     return {
         "success": True,
         "readings": [reading],
         "all_ocr": filtered_readings,
+        "image_path": target_image_path, # 核心：将裁剪图路径传回前端，确保 UI 同步
         "detail": None if (primary_key and primary_key in numeric_ocr) else "已精准捕获仪器特写，但读数需校对",
     }
 
@@ -931,7 +982,7 @@ def auto_trigger_instrument(exp_id: int, body: ExperimentRunTestBody):
 
     # 2. 自动定位物理相机
     physical_camera_id = DynamicInstrumentLibrary.get_physical_camera_id(target_id)
-    logger.info(f"仪器 F{target_id} 映射到物理相机 {physical_camera_id}")
+    logger.info(f"仪器 D{target_id} 映射到物理相机 {physical_camera_id}")
 
     # 3. 拍照
     mock_enabled = get_config("mock_camera_enabled", default=False)
@@ -953,22 +1004,26 @@ def auto_trigger_instrument(exp_id: int, body: ExperimentRunTestBody):
     if not success:
         return {"success": False, "detail": result.get("error", "拍照失败")}
 
-    raw_image_path = result.get("image_path")
-    if not raw_image_path:
-        return {"success": False, "detail": "未获取到图片"}
-
-    # 4. 转换并保存全图
-    saved_full_path = _convert_and_save_image(raw_image_path, physical_camera_id, 0)
-    full_image_abs = os.path.abspath(str(_images_dir / saved_full_path))
-
+    # 4. 转换并保存全图 (用于前端预览)
+    # 注意：raw_image_path 可能已经是预览图，取决于 CameraClient 的返回
+    preview_image_path = result.get("image_path")
+    original_image_path = result.get("raw_image_path")
+    
+    # 生成用于前端显示的预览图路径（相对于 images 目录）
+    saved_full_path = _convert_and_save_image(original_image_path or preview_image_path, physical_camera_id, 0)
+    
     # 5. YOLO 检测并获取特写
+    # 【核心修复】必须使用原始高分辨率图进行检测和裁剪，以保证特写图的清晰度
+    detection_input = original_image_path if (original_image_path and os.path.exists(original_image_path)) else os.path.abspath(str(_images_dir / saved_full_path))
+    
+    logger.info(f"YOLO 检测输入: {detection_input}")
     try:
         reader = InstrumentReader()
-        detect_result = reader.detect_only(full_image_abs)
+        detect_result = reader.detect_only(detection_input)
         
         if detect_result["success"] and detect_result["results"]:
             results = detect_result["results"]
-            logger.info(f"Target F{target_id} detection results: {[r['class_id'] for r in results]}")
+            logger.info(f"Target D{target_id} detection results: {[r['class_id'] for r in results]}")
             
             # 严格匹配 class_id == target_id
             best_crop = next((r for r in results if r["class_id"] == target_id), None)
@@ -1066,9 +1121,10 @@ def _do_run_experiment_field(exp_id: int, field_key: str, camera_id: int):
         return {"success": False, "detail": f"OCR 结果无法解析: {raw_reading}"}
 
     saved_image_path = None
-    raw_image_path = result.get("image_path")
-    if raw_image_path:
-        saved_image_path = _convert_and_save_image(raw_image_path, camera_id, run_index)
+    # 核心修复：优先使用原始高分辨率路径
+    original_path = result.get("raw_image_path") or result.get("image_path")
+    if original_path:
+        saved_image_path = _convert_and_save_image(original_path, camera_id, run_index)
 
     reading = create_reading(
         experiment_id=exp_id,
@@ -1202,12 +1258,12 @@ def get_camera_instruments():
     """返回相机编号到仪器的映射（动态从数据库获取）"""
     from instrument_reader import DynamicInstrumentLibrary
     
-    # 获取默认路由表 (F0 -> 0, F1 -> 3, etc.)
+    # 获取默认路由表 (D0 -> 0, D1 -> 3, etc.)
     route_map = DynamicInstrumentLibrary.get_route_map()
     
     results = {}
     for slot_id, camera_id in route_map.items():
-        slot_name = f"F{slot_id}"
+        slot_name = f"D{slot_id}"
         # slot_id 就是 instrument_type 的数字字符串
         template = DynamicInstrumentLibrary.get_template(str(slot_id))
         
@@ -1225,7 +1281,7 @@ def get_camera_instruments():
                 ]
             }
         else:
-            results[slot_name] = {"name": f"原始仪器(F{slot_id})", "readings": []}
+            results[slot_name] = {"name": f"原始仪器(D{slot_id})", "readings": []}
             
     return {"success": True, "cameras": results}
 
@@ -1385,9 +1441,9 @@ def export_experiment(exp_id: int):
 
         for run_idx in [0, 1]:
             row_n = 8 + run_idx
-            rpm3 = next((r["value"] for r in readings if r["field_key"] == "rpm3" and r["run_index"] == run_idx), "")
-            rpm6 = next((r["value"] for r in readings if r["field_key"] == "rpm6" and r["run_index"] == run_idx), "")
-            rpm100_r = next((r for r in readings if r["field_key"] == "rpm100" and r["run_index"] == run_idx), None)
+            rpm3 = next((r["value"] for r in readings if r["field_key"] == "reading_3rpm" and r["run_index"] == run_idx), "")
+            rpm6 = next((r["value"] for r in readings if r["field_key"] == "reading_6rpm" and r["run_index"] == run_idx), "")
+            rpm100_r = next((r for r in readings if r["field_key"] == "reading_100rpm" and r["run_index"] == run_idx), None)
             rpm100 = rpm100_r["value"] if rpm100_r else ""
             eta = round((rpm100 * 5.077) / 1.704, 4) if rpm100 != "" else ""
             img = rpm100_r.get("image_path") or "" if rpm100_r else ""
@@ -1398,7 +1454,7 @@ def export_experiment(exp_id: int):
             cell(row_n, 5, eta, align="center")
             cell(row_n, 6, img)
 
-        all_eta = [(r["value"] * 5.077) / 1.704 for r in readings if r["field_key"] == "rpm100"]
+        all_eta = [(r["value"] * 5.077) / 1.704 for r in readings if r["field_key"] == "reading_100rpm"]
         if all_eta:
             cell(11, 1, "平均表观黏度 (mPa·s)", bold=True, fill=subheader_fill)
             cell(11, 5, round(sum(all_eta) / len(all_eta), 4), align="center")
@@ -1458,28 +1514,35 @@ def export_experiment(exp_id: int):
         # ── 纯水表面张力
         cell(10, 1, "纯水表面张力验证", bold=True, fill=subheader_fill)
         ws.merge_cells("A10:F10")
-        header_row(11, [(1, "项目"), (2, "测试值 (mN/m)"), (3, "时间戳"), (4, "图片路径")],
+        header_row(11, [(1, "实验次数"), (2, "测试值 (mN/m)"), (3, "时间戳"), (4, "图片路径")],
                    fill=header_fill)
-        wst_r = next((r for r in readings if r["field_key"] == "water_surface_tension"), None)
-        cell(12, 1, "纯水表面张力")
-        cell(12, 2, wst_r["value"] if wst_r else "", align="center")
-        cell(12, 3, (wst_r.get("timestamp") or "")[:19] if wst_r else "")
-        cell(12, 4, wst_r.get("image_path") or "" if wst_r else "")
-
-        # ── 破胶液表面张力
-        cell(14, 1, f"破胶液表面张力（样品密度 {manual.get('sample_density','')} g/cm³）",
-             bold=True, fill=subheader_fill)
-        ws.merge_cells("A14:F14")
-        header_row(15, [(1, "实验次数"), (2, "表面张力 (mN/m)"), (3, "时间戳"), (4, "图片路径")],
-                   fill=header_fill)
-        fst = [r for r in readings if r["field_key"] == "fluid_surface_tension"]
-        for i, r in enumerate(fst):
-            rn = 16 + i
+        wst = [r for r in readings if r["field_key"] == "water_surface_tension"]
+        for i, r in enumerate(wst):
+            rn = 12 + i
             cell(rn, 1, f"实验 {i + 1}", align="center")
             cell(rn, 2, r["value"], align="center")
             cell(rn, 3, (r.get("timestamp") or "")[:19])
             cell(rn, 4, r.get("image_path") or "")
-        avg_row = 16 + len(fst)
+        wst_avg_row = 12 + len(wst)
+        if wst:
+            cell(wst_avg_row, 1, "算术平均值", bold=True, fill=subheader_fill)
+            cell(wst_avg_row, 2, round(sum(r["value"] for r in wst) / len(wst), 4), align="center")
+
+        # ── 破胶液表面张力
+        base_fst = wst_avg_row + 2
+        cell(base_fst, 1, f"破胶液表面张力（样品密度 {manual.get('sample_density','')} g/cm³）",
+             bold=True, fill=subheader_fill)
+        ws.merge_cells(f"A{base_fst}:F{base_fst}")
+        header_row(base_fst + 1, [(1, "实验次数"), (2, "表面张力 (mN/m)"), (3, "时间戳"), (4, "图片路径")],
+                   fill=header_fill)
+        fst = [r for r in readings if r["field_key"] == "fluid_surface_tension"]
+        for i, r in enumerate(fst):
+            rn = base_fst + 2 + i
+            cell(rn, 1, f"实验 {i + 1}", align="center")
+            cell(rn, 2, r["value"], align="center")
+            cell(rn, 3, (r.get("timestamp") or "")[:19])
+            cell(rn, 4, r.get("image_path") or "")
+        avg_row = base_fst + 2 + len(fst)
         if fst:
             cell(avg_row, 1, "算术平均值", bold=True, fill=subheader_fill)
             cell(avg_row, 2, round(sum(r["value"] for r in fst) / len(fst), 4), align="center")
@@ -1520,6 +1583,56 @@ def export_experiment(exp_id: int):
         cell(sign_row + 2, 4, manual.get("reviewer_date", ""))
 
         for col, width in [(1, 22), (2, 16), (3, 20), (4, 36)]:
+            ws.column_dimensions[get_column_letter(col)].width = width
+        ws.row_dimensions[1].height = 24
+
+    elif exp_type == "ph_value":
+        ws.merge_cells("A1:F1")
+        cell(1, 1, "pH值检测原始记录", bold=True, align="center")
+        ws.cell(1, 1).font = Font(bold=True, size=13)
+
+        cell(2, 1, "文件编号 File：WLD-QP5100113-02　版次 Edition：A/1　执行标准：SY/T 5107-2016")
+        ws.merge_cells("A2:F2")
+
+        header_row(3, [(1, "检测日期"), (3, "样品编号")], fill=subheader_fill)
+        cell(3, 2, manual.get("test_date", ""))
+        cell(3, 4, manual.get("sample_number", ""))
+        header_row(4, [(1, "被检样品名称"), (3, "室内温度 (℃)"), (5, "室内湿度 (%)")], fill=subheader_fill)
+        cell(4, 2, manual.get("sample_name", ""))
+        cell(4, 4, manual.get("room_temp", ""))
+        cell(4, 6, manual.get("room_humidity", ""))
+
+        header_row(6, [(1, "实验次数"), (2, "pH值"), (3, "温度 (℃)"), (4, "时间戳"), (5, "图片路径")], fill=header_fill)
+        
+        ph_readings = [r for r in readings if r["field_key"] == "ph_measurement"]
+        ph_vals = []
+        temp_vals = []
+        
+        for i, r in enumerate(ph_readings):
+            rn = 7 + i
+            ocr = r.get("ocr_data", {})
+            ph = ocr.get("ph_value") or r.get("value")
+            temp = ocr.get("temperature")
+            
+            if ph is not None and not isinstance(ph, str): ph_vals.append(float(ph))
+            elif ph and str(ph).replace('.', '', 1).isdigit(): ph_vals.append(float(ph))
+                
+            if temp is not None and not isinstance(temp, str): temp_vals.append(float(temp))
+            elif temp and str(temp).replace('.', '', 1).isdigit(): temp_vals.append(float(temp))
+                
+            cell(rn, 1, f"实验 {i + 1}", align="center")
+            cell(rn, 2, ph if ph is not None else "", align="center")
+            cell(rn, 3, temp if temp is not None else "", align="center")
+            cell(rn, 4, (r.get("timestamp") or "")[:19])
+            cell(rn, 5, r.get("image_path") or "")
+            
+        avg_row = 7 + len(ph_readings)
+        if ph_readings:
+            cell(avg_row, 1, "算术平均值", bold=True, fill=subheader_fill)
+            cell(avg_row, 2, round(sum(ph_vals) / len(ph_vals), 2) if ph_vals else "", align="center")
+            cell(avg_row, 3, round(sum(temp_vals) / len(temp_vals), 1) if temp_vals else "", align="center")
+            
+        for col, width in [(1, 12), (2, 12), (3, 12), (4, 20), (5, 36)]:
             ws.column_dimensions[get_column_letter(col)].width = width
         ws.row_dimensions[1].height = 24
 
@@ -1865,25 +1978,26 @@ def rebuild_clip_cache():
 # 仪器模板与映射管理
 @app.get("/instruments/templates")
 def list_instrument_templates():
-    """获取所有仪器模板（仅返回 F0-F8 核心 9 个仪器）"""
+    """获取所有仪器模板（仅返回 D0-D8 核心 9 个仪器）"""
     templates = get_all_templates()
-    # 为前端格式化：仅返回 F0-F8
+    # 为前端格式化：仅返回 D0-D8
     result = []
     # 核心仪器 ID 列表 0-8
     core_ids = [str(i) for i in range(9)]
     
     for t in templates:
         inst_type = t["instrument_type"]
-        if inst_type in core_ids or (inst_type.startswith('F') and inst_type[1:] in core_ids):
-            # 统一展示为 F0, F1... 格式
-            display_type = inst_type if inst_type.startswith('F') else f"F{inst_type}"
+        if inst_type in core_ids or (inst_type.startswith('D') and inst_type[1:] in core_ids) or (inst_type.startswith('F') and inst_type[1:] in core_ids):
+            # 统一展示为 D0, D1... 格式
+            id_str = inst_type[1:] if inst_type.startswith(('D', 'F')) else inst_type
+            display_type = f"D{id_str}"
             result.append({
                 "instrument_type": display_type,
                 "name": t["name"],
                 "description": t["description"]
             })
     
-    # 按 F0-F8 排序
+    # 按 D0-D8 排序
     result.sort(key=lambda x: int(x["instrument_type"][1:]))
     return {"success": True, "templates": result}
 
