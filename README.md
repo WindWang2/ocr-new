@@ -1,63 +1,40 @@
-# OCR 实验室仪表读数识别系统 (New Architecture)
+# OCR 实验室仪表读数识别系统 (V1.2 Architecture)
 
-基于 **YOLOv8 + GLM-OCR** 的高性能实验室仪表读数自动识别系统。采用“以仪器为中心”的配置架构，支持复杂环境下的多目标检测与精准 OCR。
+基于 **YOLOv8 + Qianfan-OCR (llama.cpp 加速)** 的高性能实验室仪表读数自动识别平台。本系统专为离线部署和复杂的工业暗光环境设计，提供从目标定位到全量化数值提取的端到端解决方案。
 
-## 核心架构
+## 核心架构升级
 
-1. **YOLO 目标定位**：采用训练好的 `last.pt` 权重，识别 9 类仪器 (Class 0-8)。
-2. **智能裁切流**：系统根据 YOLO 定位自动抠图，消除背景干扰。
-3. **GLM-OCR 视觉识别**：利用本地 GPU 加速的 GLM-OCR 模型，对特写图进行精准读数提取。
-4. **中央配置驱动**：所有仪器的路由、提示词、后处理逻辑统一由 `backend/instrument_configs.py` 管理。
+1. **大模型视觉算力卸载 (GPU)**：
+   - 彻底废弃了缓慢的 Python 运行时加载，全面转向 C++ 原生的 `llama-server` (CUDA 13.1 编译版)。
+   - **mmproj (视觉组件)** 和 LLM 层全量 Offload 至 NVIDIA Tensor Core。单张复杂仪表图片（如 D0 混调器 11 个字段）处理时间从 50s+ 缩短至 **5~8 秒**。
+2. **零 Padding 紧凑裁剪**：
+   - 优化了 YOLOv8 的后处理逻辑，精准提取纯净的仪表屏幕（BBox 零填充），最大程度减少背景干扰。
+3. **暗光自适应旋转引擎 (OpenCV)**：
+   - 针对 D4 (水质仪) 等容易横置摆放的设备，底层内置 CLAHE 暗光增强与 Canny 边缘密度探测算法，自动执行 90° 顺逆时针旋转纠正，确保大模型始终读取正向屏幕。
+4. **全动态 Prompt 模板引擎**：
+   - 彻底实行“去数值化”和“布局感知”提示词策略，杜绝大模型在暗光或黑屏（关机）状态下的“数字幻觉”复读。
+5. **React/Next.js 全栈控制台**：
+   - 提供 5 大定制化核心实验（表观黏度、表面/界面张力、运动粘度、水质矿化度、pH值）的结构化表单。
+   - 内置全流程 SVG 交互式实验操作指导，支持一键 Excel 原始记录导出及纯水张力均值自动核算。
 
-## 功能特性
+## 离线部署方案 (Windows)
 
-- **仪器-相机解耦**：支持在 `instrument_configs.py` 中自由映射仪器到任意相机。
-- **强制 ID 匹配**：请求 F1 时，即使 YOLO 误认，系统也会强制套用 F1 的专业提示词，确保业务逻辑准确。
-- **高精度 Prompt 模板**：针对天平、水质仪、粘度计等专门优化了提示词，包含小数点纠偏逻辑。
-- **本地 GPU 加速**：在 `ocr_backend` 环境下运行，充分利用 1080 Ti 的推理能力。
+系统支持一键打包与离线部署，专为无外网的实验室环境设计。
 
-## 项目结构
+### 1. 环境前提
+- **OS**: Windows 10/11
+- **硬件**: 推荐 NVIDIA 3060 Ti (8GB) 或以上显卡
+- **基础依赖**: 需提前安装 Python 3.10+ 和 Node.js 18+
 
-```
-├── backend/
-│   ├── instrument_configs.py    # 【核心】中央配置文件 (路由、Prompt、后处理)
-│   ├── api/main.py              # FastAPI 后端服务
-│   └── services/
-│       ├── llm_provider.py      # GLM-OCR 适配层
-│       └── yolo_detector.py     # YOLOv8 推理引擎
-├── instrument_reader.py         # 核心逻辑类 (协调 YOLO 裁切与 OCR 识别)
-├── PROJECT_CONTEXT.md           # 项目环境与路由备忘录
-├── start_backend.ps1            # 后端启动脚本 (Windows)
-├── start_frontend.bat           # 前端启动脚本
-└── camera_images/               # 原始图片与 crops/ 裁切缓存
-```
+### 2. 快速部署步骤
+1. 将 `deploy/ocr-system/` 拷贝至目标机器。
+2. 按目录内的 `README_DEPLOY.txt` 指引，将 `llama-b8937-bin-win-cuda-13.1-x64` 和 `Qianfan-OCR-GGUF` 放入指定位置。
+3. 确保 `last.pt` (YOLO 模型) 在系统根目录。
+4. 双击 `1_install_env.bat`，脚本将从本地 `python_wheels` 自动无网安装环境。
+5. 双击 `2_start_system.bat`，系统将自动并行拉起 `llama-server`、`FastAPI` 和 `Next.js` 服务。
 
-## 快速开始
+## 服务访问
 
-### 1. 环境准备
-确保已安装 Conda，并激活环境：
-```powershell
-conda activate ocr_backend
-```
-
-### 2. 配置说明
-修改 `backend/instrument_configs.py` 来对齐硬件：
-- `yolo_cls_id`: YOLO 模型的类别 (0-8 对应 F0-F8)。
-- `camera_id`: 物理相机编号。
-- `prompt`: 针对该仪器的专用指令。
-- `post_process`: 后处理逻辑标识 (如 `decimal_correction_2`)。
-
-### 3. 启动系统
-```powershell
-# 启动后端 (默认端口 8001)
-.\start_backend.ps1
-
-# 启动前端 (默认端口 3000)
-.\start_frontend.bat
-```
-
-## 开发者备忘录
-
-- **环境**: `ocr_backend` (Python 3.10+)
-- **GPU 推理**: GLM-OCR 默认使用 `cuda`。
-- **调试**: 查看 `backend.log` 搜索 `[DEBUG RAW LLM]` 获取大模型原始 JSON 输出。
+- **前端控制台**: `http://localhost:3000`
+- **后端 API 文档**: `http://localhost:8001/docs`
+- **大模型 RPC 监控**: `http://localhost:8080/health`
