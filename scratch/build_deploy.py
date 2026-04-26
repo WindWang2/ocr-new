@@ -159,6 +159,7 @@ pause
 ''')
 
     print(f"Deployment package created at: {deploy_dir.absolute()}")
+    print("To zip it, run: Compress-Archive -Path deploy\\ocr-system -DestinationPath deploy\\ocr_deploy_package_v1.1.zip -Force")
 
 if __name__ == "__main__":
     main()
