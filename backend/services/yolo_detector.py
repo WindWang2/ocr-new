@@ -26,10 +26,15 @@ class YOLOInstrumentDetector:
         self.iou_threshold = iou_threshold
         self.agnostic_nms = agnostic_nms
         
-        # 强制定位到上级目录下的 last.pt
+        # 优先从当前项目根目录读取 last.pt，以便离线部署包自包含
         from pathlib import Path
         project_root = Path(__file__).parent.parent.parent
-        self.model_path = model_path or str(project_root.parent / "last.pt")
+        
+        default_model = project_root / "last.pt"
+        if not default_model.exists() and (project_root.parent / "last.pt").exists():
+            default_model = project_root.parent / "last.pt"
+            
+        self.model_path = model_path or str(default_model)
         
         if not os.path.exists(self.model_path):
             logger.warning(f"指定模型未找到: {self.model_path}, 尝试备选路径...")
