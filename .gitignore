@@ -24,3 +24,5 @@ models/
 *.pth
 *.bin
 *.ckpt
+
+deploy/
