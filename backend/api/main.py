@@ -2022,6 +2022,586 @@ def update_instrument_mapping(body: InstrumentMappingUpdate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class InstrumentReadRequest(BaseModel):
+    instrument_id: int
+    camera_id: Optional[int] = None
+
+
+@app.post("/instruments/read")
+def read_single_instrument(body: InstrumentReadRequest):
+    """
+    【新增接口】
+    输入仪器号和对应的相机号（映射表自动对齐），返回：
+    - 相机照片（压缩全景）
+    - 仪器照片（YOLO 特写截图）
+    - 读数 JSON
+    如果识别中断或缺失，返回自定义错误码与保留的图片资源以供排查。
+    """
+    instrument_id = body.instrument_id
+    camera_id = body.camera_id
+
+    # 1. 自动寻找/对齐物理相机 ID
+    if camera_id is None:
+        from instrument_reader import DynamicInstrumentLibrary
+        camera_id = DynamicInstrumentLibrary.get_physical_camera_id(instrument_id)
+
+    # 2. 触发拍照
+    mock_enabled = get_config("mock_camera_enabled", default=False)
+    image_dir_cfg = get_config("image_dir", default=None) or None
+    raw_image_path = None
+    saved_full_path = None
+
+    try:
+        if mock_enabled:
+            from backend.services.mock_camera import MockCameraClient
+            client = MockCameraClient(camera_id=camera_id, image_dir=image_dir_cfg)
+            success, result = client.capture_image()
+        else:
+            from backend.services.camera_control import CameraClient
+            camera_config = Config.get_camera_config()
+            if image_dir_cfg:
+                camera_config["image_dir"] = image_dir_cfg
+            client = CameraClient(camera_id=camera_id, config=camera_config)
+            success, result = client.capture_image()
+    except Exception as e:
+        logger.error(f"拍照失败: {e}")
+        return {
+            "success": False,
+            "error_code": 1001,
+            "message": f"相机拍照失败（无法连接到物理相机硬件）: {str(e)}",
+            "camera_image": None,
+            "instrument_image": None,
+            "readings": None
+        }
+
+    if not success or not result:
+        return {
+            "success": False,
+            "error_code": 1001,
+            "message": f"相机拍照失败: {result.get('error', '未知硬件错误') if result else '硬件无响应'}",
+            "camera_image": None,
+            "instrument_image": None,
+            "readings": None
+        }
+
+    original_image_path = result.get("raw_image_path") or result.get("image_path")
+    if not original_image_path or not os.path.exists(original_image_path):
+        return {
+            "success": False,
+            "error_code": 1001,
+            "message": "拍照成功但未能在服务器本地找到捕获的物理照片",
+            "camera_image": None,
+            "instrument_image": None,
+            "readings": None
+        }
+
+    # 2.1 对原景全图进行 600px 压缩并保存 (用于前端展示的轻量全图)
+    from PIL import Image as _PILImage
+    try:
+        img = _PILImage.open(original_image_path).convert("RGB")
+        w, h = img.size
+        max_side = 600
+        if max(w, h) > max_side:
+            s = max_side / max(w, h)
+            img = img.resize((int(w * s), int(h * s)), _PILImage.Resampling.LANCZOS)
+        
+        fallback_dir = Path(original_image_path).parent / "crops"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        fallback_name = f"compressed_full_{camera_id}_{time.strftime('%H%M%S')}.png"
+        compressed_full_path = fallback_dir / fallback_name
+        img.save(str(compressed_full_path), "PNG")
+        
+        # 计算相对 URL 路径 (images/{path:path})
+        parts = list(compressed_full_path.parts)
+        start_idx = 0
+        for i in range(len(parts) - 1, -1, -1):
+            if re.match(r'^[Ff]\d+$', parts[i]):
+                start_idx = i
+                break
+        saved_full_path = "/".join(parts[start_idx:]).replace("\\", "/")
+    except Exception as e:
+        logger.warning(f"全图等比压缩保存失败: {e}")
+        try:
+            saved_full_path = os.path.relpath(original_image_path, _images_dir).replace("\\", "/")
+        except:
+            saved_full_path = original_image_path
+
+    # 3. YOLO 目标检测：查找特定仪表的特写截图
+    cropped_image_rel_path = None
+    cropped_abs_path = None
+    try:
+        from instrument_reader import InstrumentReader
+        reader = InstrumentReader()
+        detect_result = reader.detect_only(original_image_path)
+        
+        if detect_result.get("success") and detect_result.get("results"):
+            results = detect_result["results"]
+            target_crop = next((r for r in results if r["class_id"] == instrument_id and r.get("yolo_confidence", 0) > 0.3), None)
+            
+            if target_crop:
+                cropped_image_rel_path = target_crop["cropped_image_path"]
+                cropped_abs_path = target_crop["image_source"]
+    except Exception as e:
+        logger.error(f"YOLO 仪表检测定位抛出异常: {e}")
+
+    # E1002: 相机有全景照片，但没有检测到目标仪表 (YOLO定位失败)
+    if not cropped_image_rel_path:
+        return {
+            "success": False,
+            "error_code": 1002,
+            "message": "未在相机视野中成功检测到目标仪表（YOLO定位对准失败）",
+            "camera_image": saved_full_path,
+            "instrument_image": None,
+            "readings": None
+        }
+
+    # 4. LLM OCR 精准读数
+    readings = None
+    try:
+        from instrument_reader import InstrumentReader
+        from backend.services.llm_provider import get_global_provider
+        reader = InstrumentReader(provider=get_global_provider())
+        
+        ocr_result = reader.mm_reader.read_instrument(cropped_abs_path, instrument_type=f"D{instrument_id}")
+        
+        if "error" in ocr_result:
+            return {
+                "success": False,
+                "error_code": 1004,
+                "message": f"大模型服务在提取读数时连接或接口调用失败: {ocr_result['error']}",
+                "camera_image": saved_full_path,
+                "instrument_image": cropped_image_rel_path,
+                "readings": None
+            }
+            
+        # 后处理纠正逻辑
+        from backend.services.post_processor import apply_post_processing
+        readings = apply_post_processing(instrument_id, ocr_result)
+        
+        # 清空内部调试冗余
+        if isinstance(readings, dict):
+            readings.pop("_raw_output", None)
+            
+    except Exception as e:
+        logger.error(f"LLM 读数解析过程失败: {e}")
+        return {
+            "success": False,
+            "error_code": 1004,
+            "message": f"大模型服务在读取仪器过程中失败: {str(e)}",
+            "camera_image": saved_full_path,
+            "instrument_image": cropped_image_rel_path,
+            "readings": None
+        }
+
+    # 验证读数有效性：如果在识别模板中有配置字段，但返回的字段全为空(或无返回)，则判为残缺/不完整
+    from instrument_reader import DynamicInstrumentLibrary
+    template = DynamicInstrumentLibrary.get_template(str(instrument_id))
+    all_null = True
+    if template and readings:
+        fields = template.get("fields", [])
+        if fields:
+            for f in fields:
+                if readings.get(f["name"]) is not None:
+                    all_null = False
+                    break
+        else:
+            all_null = len(readings) == 0
+
+    # E1003: 有全图、有特写切片，但无法解析出合规的数值（读数面板不完整/被遮挡等）
+    if not readings or all_null:
+        return {
+            "success": False,
+            "error_code": 1003,
+            "message": "仪表读数面板可能不完整、被部分遮挡或无法提取到合规的数值",
+            "camera_image": saved_full_path,
+            "instrument_image": cropped_image_rel_path,
+            "readings": readings if readings else None
+        }
+
+    # 5. 完全成功
+    return {
+        "success": True,
+        "camera_image": saved_full_path,
+        "instrument_image": cropped_image_rel_path,
+        "readings": readings
+    }
+
+
+def upload_file_to_ftp(local_path: str, remote_filename: str) -> Optional[str]:
+    """
+    将本地物理文件上传到远程 FTP 服务器，并返回云端访问 URL。
+    如果上传失败，返回 None。
+    """
+    ftp_host = get_config("ftp_host") or "127.0.0.1"
+    try:
+        ftp_port = int(get_config("ftp_port") or 21)
+    except:
+        ftp_port = 21
+    ftp_user = get_config("ftp_user") or "anonymous"
+    ftp_pass = get_config("ftp_pass") or ""
+    ftp_dir = get_config("ftp_dir") or "/images"
+    cloud_url_prefix = get_config("cloud_url_prefix") or f"http://{ftp_host}"
+
+    from ftplib import FTP
+    try:
+        ftp = FTP()
+        ftp.connect(ftp_host, ftp_port, timeout=10)
+        ftp.login(ftp_user, ftp_pass)
+        
+        # 确保并切换到目标 FTP 文件夹
+        for part in ftp_dir.strip("/").split("/"):
+            if not part: continue
+            try:
+                ftp.cwd(part)
+            except:
+                try:
+                    ftp.mkd(part)
+                    ftp.cwd(part)
+                except Exception as e:
+                    logger.warning(f"FTP 目录切换/创建失败: {part}, {e}")
+
+        # 二进制上传
+        with open(local_path, "rb") as f:
+            ftp.storbinary(f"STOR {remote_filename}", f)
+        ftp.quit()
+
+        # 返回云端访问路径
+        return f"{cloud_url_prefix.rstrip('/')}/{ftp_dir.strip('/')}/{remote_filename}"
+    except Exception as e:
+        logger.error(f"FTP 上传失败: {e}")
+        return None
+
+
+@app.post("/instruments/read-ftp")
+def read_single_instrument_ftp(body: InstrumentReadRequest):
+    """
+    【新增 FTP 版接口】
+    拍照并裁剪特定仪器的特写，将其保存上传至云端 FTP，并返回云端完全合格的 URL。
+    如果上传失败，返回 E1005 错误。
+    """
+    instrument_id = body.instrument_id
+    camera_id = body.camera_id
+
+    # 1. 自动寻找/对齐物理相机 ID
+    if camera_id is None:
+        from instrument_reader import DynamicInstrumentLibrary
+        camera_id = DynamicInstrumentLibrary.get_physical_camera_id(instrument_id)
+
+    # 2. 触发拍照
+    mock_enabled = get_config("mock_camera_enabled", default=False)
+    image_dir_cfg = get_config("image_dir", default=None) or None
+    raw_image_path = None
+
+    try:
+        if mock_enabled:
+            from backend.services.mock_camera import MockCameraClient
+            client = MockCameraClient(camera_id=camera_id, image_dir=image_dir_cfg)
+            success, result = client.capture_image()
+        else:
+            from backend.services.camera_control import CameraClient
+            camera_config = Config.get_camera_config()
+            if image_dir_cfg:
+                camera_config["image_dir"] = image_dir_cfg
+            client = CameraClient(camera_id=camera_id, config=camera_config)
+            success, result = client.capture_image()
+    except Exception as e:
+        logger.error(f"拍照失败: {e}")
+        return {
+            "success": False,
+            "error_code": 1001,
+            "message": f"相机拍照失败（无法连接到物理相机硬件）: {str(e)}",
+            "camera_image": None,
+            "instrument_image": None,
+            "readings": None
+        }
+
+    if not success or not result:
+        return {
+            "success": False,
+            "error_code": 1001,
+            "message": f"相机拍照失败: {result.get('error', '未知硬件错误') if result else '硬件无响应'}",
+            "camera_image": None,
+            "instrument_image": None,
+            "readings": None
+        }
+
+    original_image_path = result.get("raw_image_path") or result.get("image_path")
+    if not original_image_path or not os.path.exists(original_image_path):
+        return {
+            "success": False,
+            "error_code": 1001,
+            "message": "拍照成功但未能在服务器本地找到捕获的物理照片",
+            "camera_image": None,
+            "instrument_image": None,
+            "readings": None
+        }
+
+    # 2.1 本地全图压缩并保存
+    local_compressed_path = None
+    from PIL import Image as _PILImage
+    try:
+        img = _PILImage.open(original_image_path).convert("RGB")
+        w, h = img.size
+        max_side = 600
+        if max(w, h) > max_side:
+            s = max_side / max(w, h)
+            img = img.resize((int(w * s), int(h * s)), _PILImage.Resampling.LANCZOS)
+        
+        fallback_dir = Path(original_image_path).parent / "crops"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        fallback_name = f"compressed_full_{camera_id}_{time.strftime('%H%M%S')}.png"
+        local_compressed_path = fallback_dir / fallback_name
+        img.save(str(local_compressed_path), "PNG")
+    except Exception as e:
+        logger.error(f"全图等比压缩保存失败: {e}")
+
+    # 3. YOLO 目标检测：查找特定仪表的特写截图
+    cropped_abs_path = None
+    cropped_filename = None
+    try:
+        from instrument_reader import InstrumentReader
+        reader = InstrumentReader()
+        detect_result = reader.detect_only(original_image_path)
+        
+        if detect_result.get("success") and detect_result.get("results"):
+            results = detect_result["results"]
+            target_crop = next((r for r in results if r["class_id"] == instrument_id and r.get("yolo_confidence", 0) > 0.3), None)
+            
+            if target_crop:
+                cropped_abs_path = target_crop["image_source"]
+                cropped_filename = Path(cropped_abs_path).name
+    except Exception as e:
+        logger.error(f"YOLO 仪表检测定位抛出异常: {e}")
+
+    # E1002: YOLO 定位失败
+    if not cropped_abs_path:
+        cloud_camera_url = None
+        if local_compressed_path and os.path.exists(str(local_compressed_path)):
+            cloud_camera_url = upload_file_to_ftp(str(local_compressed_path), Path(local_compressed_path).name)
+        return {
+            "success": False,
+            "error_code": 1002,
+            "message": "未在相机视野中成功检测到目标仪表（YOLO定位对准失败）",
+            "camera_image": cloud_camera_url,
+            "instrument_image": null,
+            "readings": None
+        }
+
+    # 3.1 上传压缩全景图和定位特写截图到 FTP 服务器
+    cloud_camera_url = None
+    cloud_instrument_url = None
+    
+    if local_compressed_path and os.path.exists(str(local_compressed_path)):
+        cloud_camera_url = upload_file_to_ftp(str(local_compressed_path), Path(local_compressed_path).name)
+    
+    if cropped_abs_path and os.path.exists(cropped_abs_path):
+        cloud_instrument_url = upload_file_to_ftp(cropped_abs_path, cropped_filename)
+
+    # E1005: 上传云端 FTP 失败
+    if not cloud_camera_url or not cloud_instrument_url:
+        return {
+            "success": False,
+            "error_code": 1005,
+            "message": "图片上传云端 FTP 失败（FTP 服务未就绪或鉴权异常）",
+            "camera_image": cloud_camera_url,
+            "instrument_image": cloud_instrument_url,
+            "readings": None
+        }
+
+    # 4. LLM OCR 精准读数
+    readings = None
+    try:
+        from instrument_reader import InstrumentReader
+        from backend.services.llm_provider import get_global_provider
+        reader = InstrumentReader(provider=get_global_provider())
+        
+        ocr_result = reader.mm_reader.read_instrument(cropped_abs_path, instrument_type=f"D{instrument_id}")
+        
+        if "error" in ocr_result:
+            return {
+                "success": False,
+                "error_code": 1004,
+                "message": f"大模型服务在提取读数时连接或接口调用失败: {ocr_result['error']}",
+                "camera_image": cloud_camera_url,
+                "instrument_image": cloud_instrument_url,
+                "readings": None
+            }
+            
+        # 后处理纠正逻辑
+        from backend.services.post_processor import apply_post_processing
+        readings = apply_post_processing(instrument_id, ocr_result)
+        
+        # 清空内部调试冗余
+        if isinstance(readings, dict):
+            readings.pop("_raw_output", None)
+            
+    except Exception as e:
+        logger.error(f"LLM 读数解析过程失败: {e}")
+        return {
+            "success": False,
+            "error_code": 1004,
+            "message": f"大模型服务在读取仪器过程中失败: {str(e)}",
+            "camera_image": cloud_camera_url,
+            "instrument_image": cloud_instrument_url,
+            "readings": None
+        }
+
+    # 验证读数有效性
+    from instrument_reader import DynamicInstrumentLibrary
+    template = DynamicInstrumentLibrary.get_template(str(instrument_id))
+    all_null = True
+    if template and readings:
+        fields = template.get("fields", [])
+        if fields:
+            for f in fields:
+                if readings.get(f["name"]) is not None:
+                    all_null = False
+                    break
+        else:
+            all_null = len(readings) == 0
+
+    # E1003: 有全图、有特写切片，但无法解析出合规的数值（读数面板不完整/被遮挡等）
+    if not readings or all_null:
+        return {
+            "success": False,
+            "error_code": 1003,
+            "message": "仪表读数面板可能不完整、被部分遮挡或无法提取到合规的数值",
+            "camera_image": cloud_camera_url,
+            "instrument_image": cloud_instrument_url,
+            "readings": readings if readings else None
+        }
+
+    # 5. 完全成功
+    return {
+        "success": True,
+        "camera_image": cloud_camera_url,
+        "instrument_image": cloud_instrument_url,
+        "readings": readings
+    }
+
+
+class CameraReadRequest(BaseModel):
+    camera_id: int
+
+
+@app.post("/cameras/read-visible")
+def read_visible_instruments(body: CameraReadRequest):
+    """
+    【新增接口】
+    控制特定物理相机进行拍照，对视野内所有能识别、可读数的仪器进行 YOLO 检测裁剪，
+    并行运行大模型 OCR，返回所有在视野中检测到的仪器及其解析数值、裁剪图片信息。
+    """
+    camera_id = body.camera_id
+
+    # 1. 触发拍照
+    mock_enabled = get_config("mock_camera_enabled", default=False)
+    image_dir_cfg = get_config("image_dir", default=None) or None
+    raw_image_path = None
+
+    try:
+        if mock_enabled:
+            from backend.services.mock_camera import MockCameraClient
+            client = MockCameraClient(camera_id=camera_id, image_dir=image_dir_cfg)
+            success, result = client.capture_image()
+        else:
+            from backend.services.camera_control import CameraClient
+            camera_config = Config.get_camera_config()
+            if image_dir_cfg:
+                camera_config["image_dir"] = image_dir_cfg
+            client = CameraClient(camera_id=camera_id, config=camera_config)
+            success, result = client.capture_image()
+    except Exception as e:
+        logger.error(f"拍照失败: {e}")
+        raise HTTPException(status_code=500, detail=f"相机控制拍照失败: {str(e)}")
+
+    if not success or not result:
+        raise HTTPException(status_code=500, detail=f"相机拍摄无响应: {result.get('error') if result else '未知错误'}")
+
+    original_image_path = result.get("raw_image_path") or result.get("image_path")
+    if not original_image_path or not os.path.exists(original_image_path):
+        raise HTTPException(status_code=500, detail="未能在物理位置找到相机拍摄的照片")
+
+    # 2. 压缩全景图 (用于前端显示)
+    saved_full_path = None
+    from PIL import Image as _PILImage
+    try:
+        img = _PILImage.open(original_image_path).convert("RGB")
+        w, h = img.size
+        max_side = 600
+        if max(w, h) > max_side:
+            s = max_side / max(w, h)
+            img = img.resize((int(w * s), int(h * s)), _PILImage.Resampling.LANCZOS)
+        
+        fallback_dir = Path(original_image_path).parent / "crops"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        fallback_name = f"compressed_full_{camera_id}_{time.strftime('%H%M%S')}.png"
+        compressed_full_path = fallback_dir / fallback_name
+        img.save(str(compressed_full_path), "PNG")
+        
+        parts = list(compressed_full_path.parts)
+        start_idx = 0
+        for i in range(len(parts) - 1, -1, -1):
+            if re.match(r'^[Ff]\d+$', parts[i]):
+                start_idx = i
+                break
+        saved_full_path = "/".join(parts[start_idx:]).replace("\\", "/")
+    except Exception as e:
+        logger.warning(f"全图等比压缩保存失败: {e}")
+        try:
+            saved_full_path = os.path.relpath(original_image_path, _images_dir).replace("\\", "/")
+        except:
+            saved_full_path = original_image_path
+
+    # 3. YOLO 检测并裁剪出视野内的所有可用仪表
+    visible_instruments = []
+    try:
+        from instrument_reader import InstrumentReader, DynamicInstrumentLibrary
+        from backend.services.post_processor import apply_post_processing
+        from backend.services.llm_provider import get_global_provider
+        
+        reader = InstrumentReader(provider=get_global_provider())
+        detect_result = reader.detect_only(original_image_path)
+        
+        if detect_result.get("success") and detect_result.get("results"):
+            for crop in detect_result["results"]:
+                class_id = crop["class_id"]
+                if crop.get("yolo_confidence", 0) <= 0.3 or not (0 <= class_id <= 8):
+                    continue
+                
+                cropped_abs_path = crop["image_source"]
+                cropped_rel_path = crop["cropped_image_path"]
+                
+                # 获取模板与显示名
+                template = DynamicInstrumentLibrary.get_template(str(class_id))
+                inst_name = template["name"] if template else f"未知仪表 D{class_id}"
+                
+                # LLM OCR 精准识别
+                ocr_result = reader.mm_reader.read_instrument(cropped_abs_path, instrument_type=f"D{class_id}")
+                readings = None
+                if "error" not in ocr_result:
+                    readings = apply_post_processing(class_id, ocr_result)
+                    if isinstance(readings, dict):
+                        readings.pop("_raw_output", None)
+                
+                visible_instruments.append({
+                    "instrument_id": class_id,
+                    "instrument_name": inst_name,
+                    "bbox": crop["bbox"],
+                    "instrument_image": cropped_rel_path,
+                    "readings": readings
+                })
+    except Exception as e:
+        logger.error(f"分析视野内仪表抛出异常: {e}")
+        raise HTTPException(status_code=500, detail=f"多仪表解析分析失败: {str(e)}")
+
+    return {
+        "success": True,
+        "camera_id": camera_id,
+        "camera_image": saved_full_path,
+        "instruments": visible_instruments
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)
