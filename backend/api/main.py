@@ -2848,6 +2848,195 @@ def read_visible_instruments(body: CameraReadRequest):
     }
 
 
+@app.post("/cameras/read-visible-oss")
+def read_visible_instruments_oss(body: CameraReadRequest):
+    """
+    【新增多仪表视野阿里云 OSS 版接口】
+    控制特定物理相机进行拍照，对视野内所有能识别、可读数的仪器进行 YOLO 检测裁剪，
+    并行运行大模型 OCR，并将全景图和所有特写切片全部归档至阿里云 OSS，
+    返回包含所有视野中检测到的仪器及其解析数值、OSS 云端图片地址的数组。
+    """
+    camera_id = body.camera_id
+
+    # 1. 触发拍照
+    mock_enabled = get_config("mock_camera_enabled", default=False)
+    image_dir_cfg = get_config("image_dir", default=None) or None
+    raw_image_path = None
+
+    try:
+        if mock_enabled:
+            from backend.services.mock_camera import MockCameraClient
+            client = MockCameraClient(camera_id=camera_id, image_dir=image_dir_cfg)
+            success, result = client.capture_image()
+        else:
+            from backend.services.camera_control import CameraClient
+            camera_config = Config.get_camera_config()
+            if image_dir_cfg:
+                camera_config["image_dir"] = image_dir_cfg
+            client = CameraClient(camera_id=camera_id, config=camera_config)
+            success, result = client.capture_image()
+    except Exception as e:
+        logger.error(f"拍照失败: {e}")
+        return {
+            "success": False,
+            "error_code": 1001,
+            "message": f"相机控制拍照失败（无法连接到硬件）: {str(e)}",
+            "camera_image": None,
+            "instruments": []
+        }
+
+    if not success or not result:
+        return {
+            "success": False,
+            "error_code": 1001,
+            "message": f"相机拍摄无响应: {result.get('error', '未知错误') if result else '未知硬件错误'}",
+            "camera_image": None,
+            "instruments": []
+        }
+
+    original_image_path = result.get("raw_image_path") or result.get("image_path")
+    if not original_image_path or not os.path.exists(original_image_path):
+        return {
+            "success": False,
+            "error_code": 1001,
+            "message": "拍照成功但未能在物理位置找到相机拍摄的照片",
+            "camera_image": None,
+            "instruments": []
+        }
+
+    # 2. 压缩全景图并上传至 OSS
+    local_compressed_path = None
+    from PIL import Image as _PILImage
+    try:
+        img = _PILImage.open(original_image_path).convert("RGB")
+        w, h = img.size
+        max_side = 600
+        if max(w, h) > max_side:
+            s = max_side / max(w, h)
+            img = img.resize((int(w * s), int(h * s)), _PILImage.Resampling.LANCZOS)
+        
+        fallback_dir = Path(original_image_path).parent / "crops"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        fallback_name = f"compressed_full_{camera_id}_{time.strftime('%H%M%S')}.png"
+        local_compressed_path = fallback_dir / fallback_name
+        img.save(str(local_compressed_path), "PNG")
+    except Exception as e:
+        logger.error(f"全图等比压缩保存失败: {e}")
+
+    cloud_camera_url = None
+    if local_compressed_path and os.path.exists(str(local_compressed_path)):
+        cloud_camera_url = upload_file_to_oss(str(local_compressed_path), camera_id, Path(local_compressed_path).name)
+
+    # E1005: 验证全景图是否成功上传 OSS
+    if not cloud_camera_url:
+        return {
+            "success": False,
+            "error_code": 1005,
+            "message": "全景图上传阿里云 OSS 云端失败（请检查访问凭证及 Endpoint）",
+            "camera_image": None,
+            "instruments": []
+        }
+
+    # 3. YOLO 检测并裁剪出视野内的所有可用仪表
+    visible_instruments = []
+    try:
+        from instrument_reader import InstrumentReader, DynamicInstrumentLibrary
+        from backend.services.post_processor import apply_post_processing
+        from backend.services.llm_provider import get_global_provider
+        
+        reader = InstrumentReader(provider=get_global_provider())
+        detect_result = reader.detect_only(original_image_path)
+        
+        if detect_result.get("success") and detect_result.get("results"):
+            for crop in detect_result["results"]:
+                class_id = crop["class_id"]
+                if crop.get("yolo_confidence", 0) <= 0.3 or not (0 <= class_id <= 8):
+                    continue
+                
+                cropped_abs_path = crop["image_source"]
+                cropped_filename = Path(cropped_abs_path).name
+                
+                # 上传特写切片到 OSS
+                cloud_instrument_url = None
+                if cropped_abs_path and os.path.exists(cropped_abs_path):
+                    cloud_instrument_url = upload_file_to_oss(cropped_abs_path, camera_id, cropped_filename)
+                
+                # 获取模板与显示名
+                template = DynamicInstrumentLibrary.get_template(str(class_id))
+                inst_name = template["name"] if template else f"未知仪表 D{class_id}"
+                
+                # LLM OCR 精准识别
+                ocr_result = reader.mm_reader.read_instrument(cropped_abs_path, instrument_type=f"D{class_id}")
+                
+                readings = None
+                error_code = None
+                msg = "解析成功"
+
+                if not cloud_instrument_url:
+                    error_code = 1005
+                    msg = "特写切片上传 OSS 云端失败"
+                elif "error" in ocr_result:
+                    error_code = 1004
+                    msg = f"大模型服务在提取读数时调用失败: {ocr_result['error']}"
+                else:
+                    readings = apply_post_processing(class_id, ocr_result)
+                    if isinstance(readings, dict):
+                        readings.pop("_raw_output", None)
+                        
+                    # 验证读数有效性
+                    all_null = True
+                    if template and readings:
+                        fields = template.get("fields", [])
+                        if fields:
+                            for f in fields:
+                                if readings.get(f["name"]) is not None:
+                                    all_null = False
+                                    break
+                        else:
+                            all_null = len(readings) == 0
+                    
+                    if all_null or not readings:
+                        readings = None
+                        error_code = 1003
+                        msg = "仪表读数面板可能不完整、被部分遮挡或无法提取到合规的数值"
+                
+                visible_instruments.append({
+                    "instrument_id": class_id,
+                    "instrument_name": inst_name,
+                    "bbox": crop["bbox"],
+                    "instrument_image": cloud_instrument_url,
+                    "readings": readings,
+                    "error_code": error_code,
+                    "message": msg
+                })
+    except Exception as e:
+        logger.error(f"分析视野内仪表抛出异常: {e}")
+        return {
+            "success": False,
+            "error_code": 1004,
+            "message": f"多仪表解析分析过程失败: {str(e)}",
+            "camera_image": cloud_camera_url,
+            "instruments": []
+        }
+
+    # E1002: 视野中没有发现任何有效的仪表
+    if len(visible_instruments) == 0:
+        return {
+            "success": False,
+            "error_code": 1002,
+            "message": "未在相机视野中成功检测到任何可支持的仪表（YOLO定位返回空）",
+            "camera_image": cloud_camera_url,
+            "instruments": []
+        }
+
+    return {
+        "success": True,
+        "camera_id": camera_id,
+        "camera_image": cloud_camera_url,
+        "instruments": visible_instruments
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)
