@@ -2480,6 +2480,252 @@ def read_single_instrument_ftp(body: InstrumentReadRequest):
     }
 
 
+def upload_file_to_oss(local_path: str, camera_id: int, remote_filename: str) -> Optional[str]:
+    """
+    将本地物理文件上传到阿里云 OSS，按照 F0-F8 文件夹分类存储。
+    返回最终访问的云端 HTTPS URL。
+    """
+    access_key_id = get_config("oss_access_key_id") or ""
+    access_key_secret = get_config("oss_access_key_secret") or ""
+    endpoint = get_config("oss_endpoint") or "oss-cn-chengdu.aliyuncs.com"
+    bucket_name = get_config("oss_bucket_name") or "shiyanfangcang-1"
+
+    import oss2
+    try:
+        # 使用 RAM 访问凭证构建 Bucket 对象
+        auth = oss2.Auth(access_key_id, access_key_secret)
+        bucket = oss2.Bucket(auth, f"https://{endpoint}", bucket_name)
+        
+        # 按照 F0-F8 文件夹分类
+        remote_path = f"F{camera_id}/{remote_filename}"
+        
+        # 以二进制流模式上传文件
+        with open(local_path, "rb") as f:
+            result = bucket.put_object(remote_path, f)
+            
+        if result.status == 200:
+            # 构造公共访问 URL (假定 Bucket 已设置公共读权限，或按阿里云OSS拼接惯例)
+            cloud_url = f"https://{bucket_name}.{endpoint}/{remote_path}"
+            logger.info(f"文件 {local_path} 成功上传至阿里云 OSS: {cloud_url}")
+            return cloud_url
+        else:
+            logger.error(f"阿里云 OSS 上传返回状态码非 200: {result.status}")
+            return None
+    except Exception as e:
+        logger.error(f"上传阿里云 OSS 过程抛出异常: {e}")
+        return None
+
+
+@app.post("/instruments/read-oss")
+def read_single_instrument_oss(body: InstrumentReadRequest):
+    """
+    【新增阿里云 OSS 版接口】
+    逻辑同本地容错接口，但在本地生成/截取图片后，会自动将其归档上传至阿里云 OSS，
+    并以 F0-F8 的目录层级进行智能分类存储，最终返回云端完全合格的 HTTPS URL。
+    """
+    instrument_id = body.instrument_id
+    camera_id = body.camera_id
+
+    # 1. 自动寻找/对齐物理相机 ID
+    if camera_id is None:
+        from instrument_reader import DynamicInstrumentLibrary
+        camera_id = DynamicInstrumentLibrary.get_physical_camera_id(instrument_id)
+
+    # 2. 触发拍照
+    mock_enabled = get_config("mock_camera_enabled", default=False)
+    image_dir_cfg = get_config("image_dir", default=None) or None
+    raw_image_path = None
+
+    try:
+        if mock_enabled:
+            from backend.services.mock_camera import MockCameraClient
+            client = MockCameraClient(camera_id=camera_id, image_dir=image_dir_cfg)
+            success, result = client.capture_image()
+        else:
+            from backend.services.camera_control import CameraClient
+            camera_config = Config.get_camera_config()
+            if image_dir_cfg:
+                camera_config["image_dir"] = image_dir_cfg
+            client = CameraClient(camera_id=camera_id, config=camera_config)
+            success, result = client.capture_image()
+    except Exception as e:
+        logger.error(f"拍照失败: {e}")
+        return {
+            "success": False,
+            "error_code": 1001,
+            "message": f"相机拍照失败（无法连接到物理相机硬件）: {str(e)}",
+            "camera_image": None,
+            "instrument_image": None,
+            "readings": None
+        }
+
+    if not success or not result:
+        return {
+            "success": False,
+            "error_code": 1001,
+            "message": f"相机拍照失败: {result.get('error', '未知硬件错误') if result else '硬件无响应'}",
+            "camera_image": None,
+            "instrument_image": None,
+            "readings": None
+        }
+
+    original_image_path = result.get("raw_image_path") or result.get("image_path")
+    if not original_image_path or not os.path.exists(original_image_path):
+        return {
+            "success": False,
+            "error_code": 1001,
+            "message": "拍照成功但未能在服务器本地找到捕获的物理照片",
+            "camera_image": None,
+            "instrument_image": None,
+            "readings": None
+        }
+
+    # 2.1 本地全图压缩并保存
+    local_compressed_path = None
+    from PIL import Image as _PILImage
+    try:
+        img = _PILImage.open(original_image_path).convert("RGB")
+        w, h = img.size
+        max_side = 600
+        if max(w, h) > max_side:
+            s = max_side / max(w, h)
+            img = img.resize((int(w * s), int(h * s)), _PILImage.Resampling.LANCZOS)
+        
+        fallback_dir = Path(original_image_path).parent / "crops"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        fallback_name = f"compressed_full_{camera_id}_{time.strftime('%H%M%S')}.png"
+        local_compressed_path = fallback_dir / fallback_name
+        img.save(str(local_compressed_path), "PNG")
+    except Exception as e:
+        logger.error(f"全图等比压缩保存失败: {e}")
+
+    # 3. YOLO 目标检测：查找特定仪表的特写截图
+    cropped_abs_path = None
+    cropped_filename = None
+    try:
+        from instrument_reader import InstrumentReader
+        reader = InstrumentReader()
+        detect_result = reader.detect_only(original_image_path)
+        
+        if detect_result.get("success") and detect_result.get("results"):
+            results = detect_result["results"]
+            target_crop = next((r for r in results if r["class_id"] == instrument_id and r.get("yolo_confidence", 0) > 0.3), None)
+            
+            if target_crop:
+                cropped_abs_path = target_crop["image_source"]
+                cropped_filename = Path(cropped_abs_path).name
+    except Exception as e:
+        logger.error(f"YOLO 仪表检测定位抛出异常: {e}")
+
+    # E1002: YOLO 定位失败
+    if not cropped_abs_path:
+        cloud_camera_url = None
+        if local_compressed_path and os.path.exists(str(local_compressed_path)):
+            cloud_camera_url = upload_file_to_oss(str(local_compressed_path), camera_id, Path(local_compressed_path).name)
+        return {
+            "success": False,
+            "error_code": 1002,
+            "message": "未在相机视野中成功检测到目标仪表（YOLO定位对准失败）",
+            "camera_image": cloud_camera_url,
+            "instrument_image": None,
+            "readings": None
+        }
+
+    # 3.1 上传压缩全景图和定位特写截图到阿里云 OSS 服务器
+    cloud_camera_url = None
+    cloud_instrument_url = None
+    
+    if local_compressed_path and os.path.exists(str(local_compressed_path)):
+        cloud_camera_url = upload_file_to_oss(str(local_compressed_path), camera_id, Path(local_compressed_path).name)
+    
+    if cropped_abs_path and os.path.exists(cropped_abs_path):
+        cloud_instrument_url = upload_file_to_oss(cropped_abs_path, camera_id, cropped_filename)
+
+    # E1005: 上传云端（此处为 OSS）失败
+    if not cloud_camera_url or not cloud_instrument_url:
+        return {
+            "success": False,
+            "error_code": 1005,
+            "message": "图片上传阿里云 OSS 云端失败（请检查访问凭证及 Endpoint）",
+            "camera_image": cloud_camera_url,
+            "instrument_image": cloud_instrument_url,
+            "readings": None
+        }
+
+    # 4. LLM OCR 精准读数
+    readings = None
+    try:
+        from instrument_reader import InstrumentReader
+        from backend.services.llm_provider import get_global_provider
+        reader = InstrumentReader(provider=get_global_provider())
+        
+        ocr_result = reader.mm_reader.read_instrument(cropped_abs_path, instrument_type=f"D{instrument_id}")
+        
+        if "error" in ocr_result:
+            return {
+                "success": False,
+                "error_code": 1004,
+                "message": f"大模型服务在提取读数时连接或接口调用失败: {ocr_result['error']}",
+                "camera_image": cloud_camera_url,
+                "instrument_image": cloud_instrument_url,
+                "readings": None
+            }
+            
+        # 后处理纠正逻辑
+        from backend.services.post_processor import apply_post_processing
+        readings = apply_post_processing(instrument_id, ocr_result)
+        
+        # 清空内部调试冗余
+        if isinstance(readings, dict):
+            readings.pop("_raw_output", None)
+            
+    except Exception as e:
+        logger.error(f"LLM 读数解析过程失败: {e}")
+        return {
+            "success": False,
+            "error_code": 1004,
+            "message": f"大模型服务在读取仪器过程中失败: {str(e)}",
+            "camera_image": cloud_camera_url,
+            "instrument_image": cloud_instrument_url,
+            "readings": None
+        }
+
+    # 验证读数有效性
+    from instrument_reader import DynamicInstrumentLibrary
+    template = DynamicInstrumentLibrary.get_template(str(instrument_id))
+    all_null = True
+    if template and readings:
+        fields = template.get("fields", [])
+        if fields:
+            for f in fields:
+                if readings.get(f["name"]) is not None:
+                    all_null = False
+                    break
+        else:
+            all_null = len(readings) == 0
+
+    # E1003: 无法提取到合规的数值
+    if not readings or all_null:
+        return {
+            "success": False,
+            "error_code": 1003,
+            "message": "仪表读数面板可能不完整、被部分遮挡或无法提取到合规的数值",
+            "camera_image": cloud_camera_url,
+            "instrument_image": cloud_instrument_url,
+            "readings": readings if readings else None
+        }
+
+    # 5. 完全成功
+    return {
+        "success": True,
+        "camera_image": cloud_camera_url,
+        "instrument_image": cloud_instrument_url,
+        "readings": readings
+    }
+
+
+
+
 class CameraReadRequest(BaseModel):
     camera_id: int
 
